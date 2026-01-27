@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>BetterLife - War Risk Monitor</title>
+	<!-- Google Tag Manager -->
+<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+})(window,document,'script','dataLayer','GTM-WFBB4HNL');</script>
+<!-- End Google Tag Manager -->
+    <meta name="description"
+        content="Real-time war-risk monitor tracking escalation indicators. Live signals from news, aviation, markets, airspace, weather, and OSINT." />
+    <link rel="icon" type="image/svg+xml" href="assets/betterlife-icon.svg" />
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap"
+        rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+    <!-- Google AdSense -->
+    <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-8033751083492488"
+        crossorigin="anonymous"></script>
+    <link rel="stylesheet" href="styles.css">
+</head>
+
+<body>
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-W2DQSDJTEZ"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+
+  gtag('config', 'G-W2DQSDJTEZ');
+</script>
+    <div class="app" id="appContainer">
+        <header class="header">
+            <div class="logo">
+                <img class="logo-mark" src="assets/betterlife-icon.svg" alt="BetterLife logo" />
+                <span>BetterLife</span>
+            </div>
+            <div class="header-right">
+                <div class="live-badge">
+                    <div class="live-dot"></div>Live
+                </div>
+                <button class="icon-btn" onclick="toggleTheme()" id="themeIcon" style="margin-left: 8px;">☀️</button>
+            </div>
+        </header>
+
+        <div class="timestamp-bar">
+            <div style="display:flex;flex-direction:column;gap:2px;min-width:0">
+                <span>Updated at <span class="time" id="lastUpdate">--:--</span> <span class="tz" id="timezone"></span></span>
+                <span style="font-size: 11px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                    Last data updated <span class="time" id="pyLastUpdate">---</span>
+                </span>
+            </div>
+            <span style="color: var(--text-muted)" id="nextUpdate">Next update in 30m</span>
+        </div>
+
+        <div class="gauge-card">
+            <div class="gauge-header">
+                <span class="gauge-title" style="margin-bottom: 0;">Escalation Probability</span>
+                <button class="gauge-info-btn" onclick="showInfo('calculation')">i</button>
+            </div>
+            <div class="gauge-subtitle">Tactical Alert Level</div>
+            <div class="status-label low" id="statusLabel">Loading...</div>
+            <div class="gauge-container">
+                <svg class="gauge-svg" viewBox="0 0 200 115" preserveAspectRatio="xMidYMid meet">
+                    <defs>
+                        <linearGradient id="gradGreen" x1="0%" y1="0%" x2="100%" y2="0%">
+                            <stop offset="0%" stop-color="#22c55e" />
+                            <stop offset="100%" stop-color="#22c55e" />
+                        </linearGradient>
+                        <linearGradient id="gradYellow" x1="0%" y1="0%" x2="100%" y2="0%">
+                            <stop offset="0%" stop-color="#22c55e" />
+                            <stop offset="100%" stop-color="#eab308" />
+                        </linearGradient>
+                        <linearGradient id="gradOrange" x1="0%" y1="0%" x2="100%" y2="0%">
+                            <stop offset="0%" stop-color="#22c55e" />
+                            <stop offset="50%" stop-color="#eab308" />
+                            <stop offset="100%" stop-color="#f97316" />
+                        </linearGradient>
+                        <linearGradient id="gradRed" x1="0%" y1="0%" x2="100%" y2="0%">
+                            <stop offset="0%" stop-color="#22c55e" />
+                            <stop offset="33%" stop-color="#eab308" />
+                            <stop offset="66%" stop-color="#f97316" />
+                            <stop offset="100%" stop-color="#ef4444" />
+                        </linearGradient>
+                    </defs>
+                    <path class="gauge-track" d="M 20 100 A 80 80 0 0 1 180 100" pathLength="251.2" />
+                    <path class="gauge-fill" id="gaugeFill" d="M 20 100 A 80 80 0 0 1 180 100" pathLength="251.2" stroke="url(#gradGreen)"
+                        stroke-dasharray="251.2" stroke-dashoffset="251.2" />
+                </svg>
+            </div>
+            <div class="gauge-value green" id="gaugeValue">--</div>
+            <div class="gauge-window">Projected Risk: Next 8 Hours</div>
+        </div>
+
+        <div class="trend-section">
+            <div class="trend-header">
+                <span class="trend-title">72 Hour Risk Trends</span>
+                <span id="trendSubtitle" style="font-size: 11px; color: var(--text-muted);">Building history…</span>
+            </div>
+            <div class="chart-wrap">
+                <canvas id="trendChart"></canvas>
+                <div id="trendChartFallback"
+                    style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:11px;pointer-events:none;">
+                    Loading trend…
+                </div>
+            </div>
+        </div>
+
+        <div class="signals-section">
+            <div class="section-title">Data Signals</div>
+
+            <div class="signal-item">
+                <div class="signal-icon news">📰</div>
+                <div class="signal-info">
+                    <div class="signal-name">News Intel <span class="signal-status live"
+                            id="newsStatus">LIVE</span><button class="info-btn" onclick="showInfo('news')">i</button>
+                    </div>
+                    <div class="signal-detail" id="newsDetail">Loading...</div>
+                </div>
+                <div class="signal-right">
+                    <div class="signal-sparkline" id="newsSparkline"></div>
+                    <div class="signal-value" id="newsValue">--</div>
+                </div>
+            </div>
+
+            <div class="signal-item">
+                <div class="signal-icon trends">📈</div>
+                <div class="signal-info">
+                    <div class="signal-name">Public Interest <span class="signal-status live"
+                            id="trendsStatus">LIVE</span><button class="info-btn"
+                            onclick="showInfo('trends')">i</button></div>
+                    <div class="signal-detail" id="socialDetail">Loading...</div>
+                </div>
+                <div class="signal-right">
+                    <div class="signal-sparkline" id="socialSparkline"></div>
+                    <div class="signal-value" id="socialValue">--</div>
+                </div>
+            </div>
+
+            <div class="signal-item">
+                <div class="signal-icon flight">✈️</div>
+                <div class="signal-info">
+                    <div class="signal-name">Civil Aviation <span class="signal-status live"
+                            id="flightStatus">LIVE</span><button class="info-btn"
+                            onclick="showInfo('aviation')">i</button></div>
+                    <div class="signal-detail" id="flightDetail">Loading...</div>
+                </div>
+                <div class="signal-right">
+                    <div class="signal-sparkline" id="flightSparkline"></div>
+                    <div class="signal-value" id="flightValue">--</div>
+                </div>
+            </div>
+
+            <div class="signal-item">
+                <div class="signal-icon military">🎯</div>
+                <div class="signal-info">
+                    <div class="signal-name">Military Trackers <span class="signal-status weak"
+                            id="militaryStatus">WEAK</span><button class="info-btn"
+                            onclick="showInfo('military')">i</button></div>
+                    <div class="signal-detail" id="militaryDetail">Awaiting data...</div>
+                </div>
+                <div class="signal-right">
+                    <div class="signal-sparkline" id="militarySparkline"></div>
+                    <div class="signal-value" id="militaryValue">--</div>
+                </div>
+            </div>
+
+            <div class="signal-item">
+                <div class="signal-icon weather">🌤️</div>
+                <div class="signal-info">
+                    <div class="signal-name">Op. Conditions <span class="signal-status weak"
+                            id="weatherStatus">CACHE</span><button class="info-btn"
+                            onclick="showInfo('weather')">i</button></div>
+                    <div class="signal-detail" id="weatherDetail">Awaiting data...</div>
+                </div>
+                <div class="signal-right">
+                    <div class="signal-sparkline" id="weatherSparkline"></div>
+                    <div class="signal-value" id="weatherValue">--</div>
+                </div>
+            </div>
+
+            <div class="signal-item">
+                <div class="signal-icon" style="background: rgba(239, 68, 68, 0.15);">📉</div>
+                <div class="signal-info">
+                    <div class="signal-name">Stock Markets (War %) <span class="signal-status live"
+                            id="marketsStatus">LIVE</span><button class="info-btn"
+                            onclick="showInfo('markets')">i</button></div>
+                    <div class="signal-detail" id="marketsDetail">Loading...</div>
+                </div>
+                <div class="signal-right">
+                    <div class="signal-sparkline" id="marketsSparkline"></div>
+                    <div class="signal-value" id="marketsValue">--</div>
+                </div>
+            </div>
+
+            <div class="signal-item">
+                <div class="signal-icon" style="background: rgba(249, 115, 22, 0.15);">🍕</div>
+                <div class="signal-info">
+                    <div class="signal-name">Pentagon Pizza Meter <span class="signal-status live"
+                            id="pentagonStatus">LIVE</span><button class="info-btn"
+                            onclick="showInfo('pentagon')">i</button></div>
+                    <div class="signal-detail" id="pentagonDetail">Loading...</div>
+                </div>
+                <div class="signal-right">
+                    <div class="signal-sparkline" id="pentagonSparkline"></div>
+                    <div class="signal-value" id="pentagonValue">--</div>
+                </div>
+            </div>
+
+            <div class="signal-item">
+                <div class="signal-icon" style="background: rgba(139, 92, 246, 0.15);">📊</div>
+                <div class="signal-info">
+                    <div class="signal-name">Market Odds <span class="signal-status live"
+                            id="polymarketStatus">LIVE</span><button class="info-btn"
+                            onclick="showInfo('polymarket')">i</button></div>
+                    <div class="signal-detail" id="polymarketDetail">Loading...</div>
+                </div>
+                <div class="signal-right">
+                    <div class="signal-sparkline" id="polymarketSparkline"></div>
+                    <div class="signal-value" id="polymarketValue">--</div>
+                </div>
+            </div>
+
+            <div class="signal-item">
+                <div class="signal-icon weather">🚫</div>
+                <div class="signal-info">
+                    <div class="signal-name">Airspace NOTAMs <span class="signal-status live"
+                            id="airspaceStatus">LIVE</span><button class="info-btn"
+                            onclick="showInfo('airspace')">i</button></div>
+                    <div class="signal-detail" id="airspaceDetail">Loading...</div>
+                </div>
+                <div class="signal-right">
+                    <div class="signal-sparkline" id="airspaceSparkline"></div>
+                    <div class="signal-value" id="airspaceValue">--</div>
+                </div>
+            </div>
+
+            <div class="signal-item">
+                <div class="signal-icon gps">🛰️</div>
+                <div class="signal-info">
+                    <div class="signal-name">GPS/GNSS Interference <span class="signal-status weak"
+                            id="gpsStatus">WEAK</span><button class="info-btn"
+                            onclick="showInfo('gps')">i</button></div>
+                    <div class="signal-detail" id="gpsDetail">Awaiting data...</div>
+                </div>
+                <div class="signal-right">
+                    <div class="signal-sparkline" id="gpsSparkline"></div>
+                    <div class="signal-value" id="gpsValue">--</div>
+                </div>
+            </div>
+
+            <div class="signal-item">
+                <div class="signal-icon diplomats">🏛️</div>
+                <div class="signal-info">
+                    <div class="signal-name">Diplomatic Posture <span class="signal-status weak"
+                            id="diplomatsStatus">WEAK</span><button class="info-btn"
+                            onclick="showInfo('diplomats')">i</button></div>
+                    <div class="signal-detail" id="diplomatsDetail">Awaiting data...</div>
+                </div>
+                <div class="signal-right">
+                    <div class="signal-sparkline" id="diplomatsSparkline"></div>
+                    <div class="signal-value" id="diplomatsValue">--</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="feed-section">
+            <div class="feed-header">
+                <span class="section-title" style="margin-bottom:0">Intelligence Feed</span>
+                <span style="font-size: 11px; color: var(--text-muted)" id="feedCount">0 items</span>
+            </div>
+            <div class="feed-list" id="feedList"></div>
+            <button class="show-more-btn" id="showMoreBtn" onclick="toggleFeed()" style="display:none">Show All</button>
+        </div>
+
+        <!-- Footer with share, telegram and about -->
+        <div style="display: flex; gap: 10px; margin-top: 8px;">
+            <button class="show-more-btn"
+                style="flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px;"
+                onclick="shareSnapshot()">
+                <span>📤</span> Share
+            </button>
+            <a href="" target="_blank" class="show-more-btn"
+                style="flex: 1.5; display: flex; align-items: center; justify-content: center; gap: 6px; text-decoration: none; color: inherit;">
+                <span>🔔</span> Get Alerts
+            </a>
+            <button class="show-more-btn"
+                style="flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px;"
+                onclick="showInfo('about')">
+                <span>ℹ️</span> About
+            </button>
+        </div>
+
+        <!-- Offline indicator -->
+        <div id="offlineBar"
+            style="display: none; position: fixed; bottom: 0; left: 0; right: 0; background: var(--orange); color: #000; text-align: center; padding: 8px; font-size: 12px; font-weight: 600;">
+            ⚠️ You're offline - showing last available data
+        </div>
+
+    </div>
+
+    <!-- Info Modal -->
+    <div class="modal-overlay" id="infoModal" onclick="closeInfo(event)">
+        <div class="modal" onclick="event.stopPropagation()">
+            <div class="modal-header">
+                <span class="modal-title" id="infoTitle">Signal Info</span>
+                <button class="modal-close" onclick="closeInfo()">&times;</button>
+            </div>
+            <div class="modal-body" id="infoBody"></div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+    <script>
+        (function () {
+            const subtitle = document.getElementById('trendSubtitle');
+            const fallback = document.getElementById('trendChartFallback');
+
+            function refresh() {
+                try {
+                    const hasChart = typeof chart !== 'undefined' && chart && chart.data && chart.data.datasets && chart.data.datasets[0];
+                    if (!hasChart) {
+                        if (subtitle) subtitle.textContent = 'Chart unavailable';
+                        return;
+                    }
+
+                    const data = (chart.data.datasets[0] && chart.data.datasets[0].data) || [];
+                    const hasRealData = Array.isArray(data) && data.some(v => typeof v === 'number' && !Number.isNaN(v));
+                    if (fallback) fallback.style.display = hasRealData ? 'none' : 'flex';
+                    if (subtitle) subtitle.textContent = hasRealData ? 'Last 72h' : 'Building history…';
+                } catch (e) { }
+            }
+
+            refresh();
+            // Data can arrive later (cache fetch, API fetch, rate-limit fallback), so poll briefly.
+            let ticks = 0;
+            const timer = setInterval(() => {
+                ticks += 1;
+                refresh();
+                if (ticks >= 20) clearInterval(timer); // ~40s
+            }, 2000);
+        })();
+    </script>
+</body>
+
+</html>

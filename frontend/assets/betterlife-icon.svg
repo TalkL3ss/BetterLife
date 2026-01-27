@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="BetterLife icon">
+  <defs>
+    <radialGradient id="bg" cx="30%" cy="20%" r="80%">
+      <stop offset="0%" stop-color="#60a5fa" stop-opacity="0.28"/>
+      <stop offset="55%" stop-color="#0b1220" stop-opacity="0.95"/>
+      <stop offset="100%" stop-color="#05070d" stop-opacity="1"/>
+    </radialGradient>
+    <linearGradient id="sweep" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#22c55e" stop-opacity="0.0"/>
+      <stop offset="55%" stop-color="#22c55e" stop-opacity="0.10"/>
+      <stop offset="100%" stop-color="#22c55e" stop-opacity="0.40"/>
+    </linearGradient>
+    <filter id="softGlow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="2.8" result="blur"/>
+      <feColorMatrix in="blur" type="matrix" values="
+        1 0 0 0 0
+        0 1 0 0 0
+        0 0 1 0 0
+        0 0 0 0.75 0" result="glow"/>
+      <feMerge>
+        <feMergeNode in="glow"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect x="0" y="0" width="256" height="256" rx="56" fill="url(#bg)"/>
+
+  <!-- Radar rings -->
+  <g fill="none" stroke="#ffffff" stroke-opacity="0.10" stroke-width="2">
+    <circle cx="128" cy="128" r="72"/>
+    <circle cx="128" cy="128" r="52"/>
+    <circle cx="128" cy="128" r="32"/>
+  </g>
+
+  <!-- Crosshair -->
+  <g stroke="#ffffff" stroke-opacity="0.12" stroke-width="2" stroke-linecap="round">
+    <line x1="128" y1="44" x2="128" y2="212"/>
+    <line x1="44" y1="128" x2="212" y2="128"/>
+  </g>
+
+  <!-- Sweep -->
+  <path d="M128 128 L214 78 A108 108 0 0 1 214 178 Z" fill="url(#sweep)"/>
+  <path d="M128 128 L206 92" stroke="#22c55e" stroke-opacity="0.55" stroke-width="4" stroke-linecap="round" filter="url(#softGlow)"/>
+
+  <!-- Alert dot (war-risk) -->
+  <g filter="url(#softGlow)">
+    <circle cx="178" cy="152" r="9" fill="#f97316"/>
+    <circle cx="178" cy="152" r="16" fill="#f97316" opacity="0.12"/>
+  </g>
+</svg>

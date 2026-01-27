@@ -1,0 +1,29 @@
+name: Pentagon Pizza Meter
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+jobs:
+  update-pentagon-data:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install requests
+
+      - name: Run Pentagon Pizza Meter
+        env:
+          JSONBIN_API_KEY: ${{ secrets.JSONBIN_API_KEY }}
+        run: |
+          python pentagon_pizza.py
