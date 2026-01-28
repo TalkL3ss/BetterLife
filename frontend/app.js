@@ -34,6 +34,13 @@ function trackEvent(action, category = 'engagement', label = null, value = null,
     } catch (e) { }
 }
 
+function safeGtagEvent(name, params) {
+    try {
+        if (typeof gtag !== 'function') return;
+        gtag('event', name, params || {});
+    } catch (e) { }
+}
+
 const state = {
     risk: 0,
     feedItems: [],
@@ -764,7 +771,17 @@ function attachSourceMenuHandlers() {
 }
 
 function initChart(historyData = null) {
-    const ctx = document.getElementById('trendChart').getContext('2d');
+    const canvas = document.getElementById('trendChart');
+    const fallback = document.getElementById('trendChartFallback');
+    if (!canvas) return;
+    if (typeof Chart === 'undefined') {
+        if (fallback) {
+            fallback.style.display = 'flex';
+            fallback.textContent = 'Chart unavailable';
+        }
+        return;
+    }
+    const ctx = canvas.getContext('2d');
     const now = new Date();
 
     // If we have real history data, use it
@@ -876,7 +893,7 @@ function initChart(historyData = null) {
 
 function showInfo(type) {
     trackEvent('info_click', 'engagement', type);
-    gtag('event', 'view_item', {
+    safeGtagEvent('view_item', {
         item_id: type,
         item_name: INFO_CONTENT[type].title
     });
@@ -2139,7 +2156,7 @@ function displayData(data, fromCache = false) {
     if (projectedTotal > maxRiskSeen) maxRiskSeen = projectedTotal;
 
     trackEvent('risk_update', 'metrics', getStatusText(projectedTotal), projectedTotal);
-    gtag('event', 'signal_update', {
+    safeGtagEvent('signal_update', {
         news_score: Math.round(safeNews),
         interest_score: Math.round(safeInterest),
         aviation_score: Math.round(safeAviation),
@@ -2258,8 +2275,11 @@ async function calculate() {
     updateSignal('news', 10, 'Awaiting data...');
     updateSignal('social', 8, 'Awaiting data...');
     updateSignal('flight', 12, 'Awaiting data...');
+    updateSignal('maritime', 0, 'Awaiting data...');
     updateSignal('military', 10, 'Awaiting data...');
     updateSignal('weather', 'Marginal', 'Awaiting data...');
+    updateSignal('polymarket', 0, '0% odds');
+    updateSignal('pentagon', 10, 'Awaiting data...');
     updateSignal('gps', 5, 'Awaiting data...');
     updateSignal('diplomats', 5, 'Awaiting data...');
     updateSignal('markets', 10, 'Awaiting data...');
@@ -2352,7 +2372,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (cached) updateSourceLinks(cached);
 
     // Track page load event
-    gtag('event', 'page_load', {
+    safeGtagEvent('page_load', {
         page_title: 'BetterLife Dashboard',
         page_location: window.location.href,
         user_timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
