@@ -565,11 +565,13 @@ body {
     display: none;
     min-width: 220px;
     max-width: min(360px, 84vw);
+    max-height: min(360px, 60vh);
     background: var(--card);
     border: 1px solid var(--border);
     border-radius: 12px;
     box-shadow: 0 18px 60px rgba(0, 0, 0, 0.45);
     padding: 10px;
+    overflow: hidden;
 }
 
 .source-menu.open {
@@ -605,9 +607,29 @@ body {
     display: flex;
     flex-direction: column;
     gap: 6px;
-    max-height: 180px;
+    max-height: min(280px, 46vh);
     overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
     padding-right: 2px;
+}
+
+@media (max-width: 520px) {
+    /* Bottom-sheet style for small screens to avoid off-screen popovers */
+    .source-menu {
+        left: 12px !important;
+        right: 12px !important;
+        top: auto !important;
+        bottom: 12px !important;
+        max-width: none;
+        width: auto;
+        border-radius: 16px;
+        box-shadow: 0 22px 70px rgba(0, 0, 0, 0.6);
+    }
+
+    .source-menu-list {
+        max-height: min(360px, 50vh);
+    }
 }
 
 .source-menu-item {

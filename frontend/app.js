@@ -50,6 +50,7 @@ const state = {
     sourceLists: {},
     cacheSeedMs: null,
     lastCacheSeenMs: 0,
+    usingLocalCache: false,
     // Cache last known values for when APIs fail
     lastKnown: {
         aviation: { value: 5, detail: 'Cached data' }
@@ -379,17 +380,18 @@ function setStatus(id, live) {
 }
 
 function updateTimestamp(cacheTimestamp = null) {
-    // Use cache timestamp if provided, otherwise current time
-    if (cacheTimestamp) {
-        lastUpdateTime = new Date(cacheTimestamp);
-    } else {
-        lastUpdateTime = new Date();
+    // Use cache timestamp if provided, otherwise current time.
+    // Avoid restarting the 30m countdown if the timestamp didn't actually change.
+    const next = cacheTimestamp ? new Date(cacheTimestamp) : new Date();
+    if (lastUpdateTime && next && lastUpdateTime.getTime && next.getTime && lastUpdateTime.getTime() === next.getTime()) {
+        return;
     }
+    lastUpdateTime = next;
     // Format the time from the actual data timestamp
-    const hours = lastUpdateTime.getHours().toString().padStart(2, '0');
-    const mins = lastUpdateTime.getMinutes().toString().padStart(2, '0');
+    const hours = lastUpdateTime.getUTCHours().toString().padStart(2, '0');
+    const mins = lastUpdateTime.getUTCMinutes().toString().padStart(2, '0');
     document.getElementById('lastUpdate').textContent = `${hours}:${mins}`;
-    document.getElementById('timezone').textContent = getTimezone();
+    document.getElementById('timezone').textContent = 'UTC';
     startCountdown();
 }
 
@@ -547,6 +549,11 @@ function closeSourceMenu() {
     if (!menu) return;
     menu.classList.remove('open');
     menu.setAttribute('aria-hidden', 'true');
+    menu.style.visibility = '';
+    menu.style.left = '';
+    menu.style.top = '';
+    menu.style.right = '';
+    menu.style.bottom = '';
     menu.innerHTML = '';
 }
 
@@ -596,16 +603,31 @@ function openSourceMenu(anchorEl, title, sources) {
     menu.appendChild(header);
     menu.appendChild(list);
 
-    const rect = anchorEl.getBoundingClientRect();
-    const margin = 8;
-    const desiredTop = rect.bottom + margin;
-    const desiredLeft = Math.min(window.innerWidth - margin - 360, Math.max(margin, rect.left - 240));
-
-    menu.style.left = `${Math.max(margin, desiredLeft)}px`;
-    menu.style.top = `${Math.min(window.innerHeight - margin - 240, desiredTop)}px`;
-
+    // Make visible for measurement/positioning (then place and reveal).
     menu.classList.add('open');
     menu.setAttribute('aria-hidden', 'false');
+    menu.style.visibility = 'hidden';
+
+    const rect = anchorEl.getBoundingClientRect();
+    const margin = 10;
+    const menuRect = menu.getBoundingClientRect();
+
+    // Prefer below the anchor, otherwise above, then clamp into viewport.
+    let top = rect.bottom + margin;
+    if (top + menuRect.height + margin > window.innerHeight) {
+        top = rect.top - menuRect.height - margin;
+    }
+
+    let left = rect.left + rect.width / 2 - menuRect.width / 2;
+    left = Math.max(margin, Math.min(left, window.innerWidth - menuRect.width - margin));
+    top = Math.max(margin, Math.min(top, window.innerHeight - menuRect.height - margin));
+
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+    menu.style.right = '';
+    menu.style.bottom = '';
+
+    menu.style.visibility = 'visible';
 }
 
 function startCountdown() {
@@ -767,7 +789,8 @@ function attachSourceMenuHandlers() {
     });
 
     window.addEventListener('resize', () => closeSourceMenu());
-    window.addEventListener('scroll', () => closeSourceMenu(), true);
+    // Only close on page scroll (not inner scroll inside the menu list).
+    window.addEventListener('scroll', () => closeSourceMenu());
 }
 
 function initChart(historyData = null) {
@@ -1334,10 +1357,22 @@ function applyJitter(value, min = 0, max = 100, range = 2, index = 0) {
 // npoint.io cache functions (free, no rate limits!)
 const NPOINT_ID = API_KEYS.npoint;
 
+function cacheBustValue() {
+    const build = (typeof window !== 'undefined' && window.__BUILD_ID__) ? String(window.__BUILD_ID__) : 'dev';
+    return `${Date.now()}-${build}`;
+}
+
 async function getCache() {
     try {
-        const cb = Math.floor(Date.now() / 60000); // 1-minute bucket
-        const res = await fetch(`https://api.npoint.io/${NPOINT_ID}?cb=${cb}`, { cache: 'no-store' });
+        // Best-effort cache busting across browsers/CDNs.
+        const cb = cacheBustValue();
+        const res = await fetch(`https://api.npoint.io/${NPOINT_ID}?cb=${encodeURIComponent(cb)}`, {
+            cache: 'no-store',
+            headers: {
+                'Cache-Control': 'no-cache',
+                'Pragma': 'no-cache'
+            }
+        });
         if (res.ok) {
             return await res.json();
         }
@@ -2146,7 +2181,7 @@ function displayData(data, fromCache = false) {
     }
 
     // Update timestamp with the actual data timestamp
-    updateTimestamp(data.timestamp);
+    updateTimestamp(data?.strikeraedar_updated_ms || data?.timestamp);
 
     // Send Telegram alert if risk crossed 60% threshold
     if (!fromCache && ALLOW_TELEGRAM_ALERTS) {
@@ -2249,21 +2284,28 @@ const MIN_API_INTERVAL = 15 * 60 * 1000; // Minimum 15 minutes between API calls
 async function calculate() {
     // Read-only mode: always render from the shared cache for consistent values across users.
     let cached = await getCache();
+    let usedLocalFallback = false;
 
     if (!cached) {
         try {
             const local = localStorage.getItem('betterlife_cache');
             if (local) cached = JSON.parse(local);
         } catch (e) { }
+        usedLocalFallback = !!cached;
     }
 
     if (cached) {
+        state.usingLocalCache = usedLocalFallback;
         state.cacheSeedMs = toFiniteNumber(cached?.strikeraedar_updated_ms, toFiniteNumber(cached?.timestamp, Date.now()));
         const cacheMs = toFiniteNumber(cached?.strikeraedar_updated_ms, toFiniteNumber(cached?.timestamp, 0));
         const isNewData = cacheMs && cacheMs !== state.lastCacheSeenMs;
         if (cacheMs) state.lastCacheSeenMs = cacheMs;
 
-        const total = displayData(cached, !isNewData);
+        updatePyLastUpdate(cached);
+        if (cached) updateSourceLinks(cached);
+        updateOnlineStatus();
+
+        const total = displayData(cached, !isNewData || usedLocalFallback);
         updateChartFromHistory(cached.history);
         try {
             localStorage.setItem('betterlife_cache', JSON.stringify(cached));
@@ -2378,21 +2420,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         user_timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
     });
 
-    setTimeout(() => { calculate(); setInterval(calculate, 1800000); }, 500);
-
-    // Refresh server (.py) timestamp every minute (lightweight cache read)
-    setTimeout(async () => {
-        try {
-            const data = await getCache();
-            if (data) updatePyLastUpdate(data);
-        } catch (e) { }
-        setInterval(async () => {
-            try {
-                const data = await getCache();
-                if (data) updatePyLastUpdate(data);
-            } catch (e) { }
-        }, 60000);
-    }, 60000);
+    // Refresh from shared cache every minute (best-effort "no-cache" and consistent updates across devices).
+    setTimeout(() => { calculate(); setInterval(calculate, 60000); }, 500);
 });
 
 // Track visibility changes (user comes back to tab)
@@ -2445,6 +2474,14 @@ function showToast(message) {
 // Offline/online detection
 function updateOnlineStatus() {
     const offlineBar = document.getElementById('offlineBar');
+    if (!offlineBar) return;
+    if (state.usingLocalCache) {
+        offlineBar.style.display = 'block';
+        offlineBar.textContent = '⚠️ Using local cached data (shared cache fetch failed)';
+        document.body.style.paddingBottom = '40px';
+        return;
+    }
+    offlineBar.textContent = "⚠️ You're offline - showing last available data";
     if (!navigator.onLine) {
         offlineBar.style.display = 'block';
         document.body.style.paddingBottom = '40px';
