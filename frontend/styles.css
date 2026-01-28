@@ -655,9 +655,10 @@ body {
 .source-menu-item-url {
     font-size: 10px;
     color: var(--text-muted);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    white-space: normal;
+    overflow: visible;
+    word-break: break-word;
+    overflow-wrap: anywhere;
 }
 
 .signal-right {

@@ -484,6 +484,7 @@ function setSourceLink(id, url) {
     const safe = safeExternalUrl(url);
     if (!safe) {
         el.setAttribute('href', '#');
+        el.setAttribute('title', '');
         el.classList.add('disabled');
         el.classList.remove('multi');
         delete state.sourceLists[el.dataset?.signal || id];
@@ -492,6 +493,7 @@ function setSourceLink(id, url) {
     el.classList.remove('disabled');
     el.classList.remove('multi');
     el.setAttribute('href', safe);
+    el.setAttribute('title', safe);
 }
 
 function updateSourceLinks(data) {
@@ -509,22 +511,46 @@ function updateSourceLinks(data) {
     setSourceLinkOrMenu('maritimeSource', 'Maritime NtM (Hormuz)', sources, firstArticle || SOURCE_URLS.maritime);
     setSourceLink('militarySource', SOURCE_URLS.military);
     setSourceLink('weatherSource', SOURCE_URLS.weather);
-    setSourceLink('marketsSource', SOURCE_URLS.markets);
+    // Stock markets: show exact per-ticker links when available.
+    const marketSources = [];
+    const tickerByRegion = { US: '^GSPC', ISRAEL: 'EIS', BITCOIN: 'BTC-USD', ETHEREUM: 'ETH-USD' };
+    const marketData = data?.markets?.data;
+    for (const region of Object.keys(tickerByRegion)) {
+        const t = tickerByRegion[region];
+        const url = `https://finance.yahoo.com/quote/${encodeURIComponent(t)}`;
+        const change = marketData?.[region]?.change_percent;
+        const changeText = Number.isFinite(Number(change)) ? ` (${Number(change).toFixed(2)}%)` : '';
+        marketSources.push({ title: `${region} · ${t}${changeText}`, url });
+    }
+    setSourceLinkOrMenu('marketsSource', 'Stock Markets (Yahoo Finance)', marketSources, SOURCE_URLS.markets, true);
     setSourceLink('pentagonSource', SOURCE_URLS.pentagon);
-    setSourceLink('polymarketSource', polymarketUrl);
-    setSourceLink('airspaceSource', SOURCE_URLS.airspace);
+    // Market odds: force a menu so users can see the exact URL (some mobile UIs hide "title" tooltips).
+    const pmMarket = (data?.polymarket?.market || data?.polymarket?.question || '').toString().trim();
+    setSourceLinkOrMenu(
+        'polymarketSource',
+        'Market Odds (Polymarket)',
+        [{ title: pmMarket ? `Polymarket · ${pmMarket}` : 'Polymarket', url: polymarketUrl }],
+        polymarketUrl,
+        true
+    );
+
+    // Airspace NOTAMs: force a menu so the full source URL is visible/copyable.
+    const airspaceUrl = safeExternalUrl(data?.airspace?.source_url) || SOURCE_URLS.airspace;
+    const firCodes = Array.isArray(data?.airspace?.fir_codes) ? data.airspace.fir_codes.filter(Boolean) : [];
+    const airTitle = firCodes.length ? `FAA NOTAM Search (FIR: ${firCodes.join(', ')})` : 'FAA NOTAM Search';
+    setSourceLinkOrMenu('airspaceSource', 'Airspace NOTAMs', [{ title: airTitle, url: airspaceUrl }], airspaceUrl, true);
     setSourceLinkOrMenu('gpsSource', 'GPS/GNSS Interference', sources, firstArticle || 'https://www.gdeltproject.org/');
     setSourceLinkOrMenu('diplomatsSource', 'Diplomatic Posture', sources, firstArticle || 'https://www.state.gov/');
 }
 
-function setSourceLinkOrMenu(id, title, sources, fallbackUrl) {
+function setSourceLinkOrMenu(id, title, sources, fallbackUrl, forceMenuIfSingle = false) {
     const el = document.getElementById(id);
     if (!el) return;
 
     const list = Array.isArray(sources) ? sources.filter(s => safeExternalUrl(s?.url)) : [];
     const signalKey = el.dataset?.signal || id;
 
-    if (list.length <= 1) {
+    if (list.length <= 1 && !forceMenuIfSingle) {
         if (list.length === 1) {
             state.sourceLists[signalKey] = list;
             setSourceLink(id, list[0].url);
@@ -542,6 +568,7 @@ function setSourceLinkOrMenu(id, title, sources, fallbackUrl) {
     el.classList.remove('disabled');
     el.classList.add('multi');
     el.setAttribute('href', '#');
+    el.setAttribute('title', 'Open sources');
 }
 
 function closeSourceMenu() {

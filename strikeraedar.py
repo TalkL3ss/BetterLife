@@ -308,19 +308,23 @@ def fetch_polymarket_signal():
         _, prob, question, market_url = candidates[0]
         odds = int(round(prob * 100))
 
-        return {
+        out = {
             "odds": odds,
             "market": question,
             "url": market_url,
             "timestamp": utc_iso(),
         }
+        out["sources"] = [{"title": out["market"], "url": out["url"]}]
+        return out
     except Exception:
-        return {
+        out = {
             "odds": 0,
             "market": "Polymarket unavailable",
             "url": "https://polymarket.com/",
             "timestamp": utc_iso(),
         }
+        out["sources"] = [{"title": out["market"], "url": out["url"]}]
+        return out
 
 def build_public_interest():
     gdelt_articles = 0
@@ -825,6 +829,7 @@ def check_airspace_warnings(aviation_count=None):
         "status": status,
         "fir_codes": [TEHRAN_FIR, TEL_AVIV_FIR],
         "source_url": "https://notams.aim.faa.gov/notamSearch/",
+        "sources": [{"title": "FAA NOTAM Search", "url": "https://notams.aim.faa.gov/notamSearch/"}],
         "timestamp": utc_iso(),
     }
 
@@ -849,37 +854,36 @@ def check_market_status():
     for region, ticker in MARKET_TICKERS.items():
         try:
             ticker_obj = yf.Ticker(ticker)
-            # Get today's data (fastest way)
+            # Get recent data
             hist = ticker_obj.history(period="5d")
-            
+
             if len(hist) < 2:
                 print(f"  Insufficient data for {ticker}")
                 continue
-                
-            # Get latest close and previous close
+
+            # Latest close vs previous close
             latest = hist.iloc[-1]
             prev = hist.iloc[-2]
-            
-            change = ((latest['Close'] - prev['Close']) / prev['Close']) * 100
-            
+            change = ((latest["Close"] - prev["Close"]) / prev["Close"]) * 100
+
             status = "GREEN" if change >= 0 else "RED"
             market_data[region] = {
                 "change_percent": change,
                 "status": status,
-                "price": float(latest['Close'])
+                "price": float(latest["Close"]),
             }
-            
+
             print(f"  {region} ({ticker}): {status} ({change:+.2f}%)")
-            
+
             if status == "RED":
                 red_market_count += 1
-                if change < -1.0: # Significant drop
+                if change < -1.0:  # Significant drop
                     details.append(f"{region} SIGNIFICANT DROP ({change:.2f}%)")
                 else:
                     details.append(f"{region} down ({change:.2f}%)")
             else:
-                 details.append(f"{region} up (+{change:.2f}%)")
-            
+                details.append(f"{region} up (+{change:.2f}%)")
+
         except Exception as e:
             print(f"  Error fetching {ticker}: {e}")
             
@@ -890,11 +894,19 @@ def check_market_status():
     elif red_market_count > 0:
         market_score = 10 # Mild indicator
         
+    sources = []
+    for region, ticker in MARKET_TICKERS.items():
+        try:
+            sources.append({"title": f"{region} · {ticker}", "url": f"https://finance.yahoo.com/quote/{requests.utils.quote(ticker)}"})
+        except Exception:
+            pass
+
     return {
         "score": market_score,
         "data": market_data,
         "details": details,
         "summary": f"{red_market_count} Red Markets" if red_market_count > 0 else "All Green",
+        "sources": sources,
         "timestamp": utc_iso()
     }
 
