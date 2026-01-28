@@ -664,7 +664,7 @@ def compute_maritime_ntm_from_articles(articles):
 # -----------------------------------------------------------------------------
 # NOTAM / Airspace Logic
 # -----------------------------------------------------------------------------
-def check_airspace_warnings():
+def check_airspace_warnings(aviation_count=None):
     """
     Checks for critical airspace warnings in Tehran (OIIX) and Tel Aviv (LLLL).
     Uses public data sources or known status if direct API is unavailable.
@@ -697,20 +697,29 @@ def check_airspace_warnings():
 
     notams = []
 
-    # Tehran (OIIX)
-    # 0=Normal, 1=Caution, 2=Restricted/Prohibited
-    tehran_status = 2
-    if tehran_status == 2:
-        notams.append(make_notam(TEHRAN_FIR, "Tehran FIR", "FIR_PROHIBITED", "CRITICAL", f"{TEHRAN_FIR} (Tehran) is RESTRICTED/PROHIBITED."))
-    elif tehran_status == 1:
-        notams.append(make_notam(TEHRAN_FIR, "Tehran FIR", "FIR_CAUTION", "WARNING", f"{TEHRAN_FIR} (Tehran) has advisory warnings."))
+    # Tehran (OIIX) - heuristic based on observed civil traffic in the FIR box
+    # IMPORTANT: NOTAMs can exist without closing the FIR (corridors, altitudes, warnings).
+    # If we still see normal traffic levels, downgrade to CAUTION/SECURITY_WARNING.
+    tehran_status = 1  # default: caution (avoid claiming full closure without a live NOTAM feed)
+    if aviation_count is not None:
+        try:
+            c = int(aviation_count)
+            if c < 5:
+                tehran_status = 2  # severe restriction indicator
+            elif c < 15:
+                tehran_status = 1  # reduced traffic
+            else:
+                tehran_status = 1  # normal-ish traffic => treat as caution only
+        except Exception:
+            pass
 
-    # Tel Aviv (LLLL)
-    tel_aviv_status = 1
-    if tel_aviv_status == 2:
-        notams.append(make_notam(TEL_AVIV_FIR, "Tel Aviv FIR", "FIR_PROHIBITED", "CRITICAL", f"{TEL_AVIV_FIR} (Tel Aviv) is CLOSED."))
-    elif tel_aviv_status == 1:
-        notams.append(make_notam(TEL_AVIV_FIR, "Tel Aviv FIR", "FIR_CAUTION", "NOTICE", f"{TEL_AVIV_FIR} (Tel Aviv) has caution advisories."))
+    if tehran_status == 2:
+        notams.append(make_notam(TEHRAN_FIR, "Tehran FIR", "FIR_RESTRICTED", "WARNING", f"{TEHRAN_FIR} (Tehran) shows restriction indicators (low observed traffic)."))
+    else:
+        notams.append(make_notam(TEHRAN_FIR, "Tehran FIR", "SECURITY_WARNING", "NOTICE", f"{TEHRAN_FIR} (Tehran) has active advisories (NOTAMs may not close the FIR)."))
+
+    # Tel Aviv (LLLL) - keep as caution unless you integrate a live NOTAM feed
+    notams.append(make_notam(TEL_AVIV_FIR, "Tel Aviv FIR", "FIR_CAUTION", "NOTICE", f"{TEL_AVIV_FIR} (Tel Aviv) has caution advisories."))
 
     raw_score = sum(int(n.get("score") or 0) for n in notams)
     raw_score = max(0, min(50, raw_score))
@@ -739,6 +748,8 @@ def check_airspace_warnings():
         "details": details,
         "notams": notams,
         "type_counts": type_counts,
+        "heuristic": True,
+        "note": "This is a heuristic severity estimate. NOTAMs can exist without closing the FIR; observed traffic is used as a sanity check.",
         "status": status,
         "fir_codes": [TEHRAN_FIR, TEL_AVIV_FIR],
         "source_url": "https://notams.aim.faa.gov/notamSearch/",
@@ -977,7 +988,7 @@ def run_once(push=False, local_cache=False, local_cache_path="frontend/local_cac
     osint = compute_osint_gps_diplomats_from_articles(articles)
 
     # 3) Core signals
-    airspace = check_airspace_warnings()
+    airspace = check_airspace_warnings(aviation_count=aviation.get("aviation_count"))
     markets = check_market_status()
     pentagon = get_pentagon_pizza_score()
 
@@ -1038,8 +1049,10 @@ def run_once(push=False, local_cache=False, local_cache_path="frontend/local_cac
         polymarket["market"] = "No active Iran-related market matched"
     polymarket_contrib = float(min(10, odds * 0.1)) if odds > 0 else 1.0
 
-    # Airspace contribution (frontend uses min(15, score))
-    airspace_contrib = float(min(15, float(airspace.get("score") or 0)))
+    # Airspace contribution: airspace.score is a 0..50 raw severity score.
+    # Convert to a 0..15 contribution (50 -> 15).
+    airspace_raw = float(airspace.get("score") or 0)
+    airspace_contrib = float(min(15.0, max(0.0, airspace_raw * 0.3)))
 
     # Pentagon contribution (frontend mapping)
     raw_p = float((pentagon.get("score") or 30))

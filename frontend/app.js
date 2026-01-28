@@ -1760,8 +1760,8 @@ function displayData(data, fromCache = false) {
     // AIRSPACE (Server-side)
     let airspaceContribution = 0;
     if (data.airspace && data.airspace.details) {
-        const score = data.airspace.score || 0;
-        airspaceContribution = Math.min(15, score); // Max 15%
+        const score = toFiniteNumber(data.airspace.score, 0); // raw 0..50 severity
+        airspaceContribution = Math.min(15, Math.max(0, score * 0.3)); // 50 -> 15%
 
         const displayRisk = Math.min(100, Math.round(score * 2));
         const status = data.airspace.status || 'Normal';
