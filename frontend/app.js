@@ -364,9 +364,19 @@ function projectRiskNext8Hours(nowRisk, history, iocScore = 0) {
     return Math.round(Math.max(0, Math.min(100, projected)));
 }
 
-const getTimezone = () => Intl.DateTimeFormat().resolvedOptions().timeZone.split('/').pop().replace('_', ' ');
+const getTimezone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
 const formatTime = () => new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
 const formatDate = (d) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+
+function getLocalTzLabel(d = new Date()) {
+    try {
+        const parts = new Intl.DateTimeFormat(undefined, { timeZoneName: 'short' }).formatToParts(d);
+        const tz = parts.find(p => p.type === 'timeZoneName')?.value;
+        return tz || getTimezone();
+    } catch (e) {
+        return getTimezone();
+    }
+}
 
 function getColor(v) { return v >= 86 ? 'red' : v >= 61 ? 'orange' : v >= 31 ? 'yellow' : 'green'; }
 function getGradient(v) { return v >= 86 ? 'url(#gradRed)' : v >= 61 ? 'url(#gradOrange)' : v >= 31 ? 'url(#gradYellow)' : 'url(#gradGreen)'; }
@@ -387,11 +397,11 @@ function updateTimestamp(cacheTimestamp = null) {
         return;
     }
     lastUpdateTime = next;
-    // Format the time from the actual data timestamp
-    const hours = lastUpdateTime.getUTCHours().toString().padStart(2, '0');
-    const mins = lastUpdateTime.getUTCMinutes().toString().padStart(2, '0');
+    // Format the time in the viewer's local timezone
+    const hours = lastUpdateTime.getHours().toString().padStart(2, '0');
+    const mins = lastUpdateTime.getMinutes().toString().padStart(2, '0');
     document.getElementById('lastUpdate').textContent = `${hours}:${mins}`;
-    document.getElementById('timezone').textContent = 'UTC';
+    document.getElementById('timezone').textContent = getLocalTzLabel(lastUpdateTime);
     startCountdown();
 }
 
