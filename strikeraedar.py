@@ -8,6 +8,7 @@ import argparse
 import time
 import re
 import xml.etree.ElementTree as ET
+from email.utils import parsedate_to_datetime
 
 # Try to import yfinance, else use fallback
 try:
@@ -77,8 +78,19 @@ def fetch_rss_items(url, max_items=50):
             title = (item.findtext("title") or "").strip()
             link = (item.findtext("link") or "").strip()
             pub = (item.findtext("pubDate") or "").strip()
+            pub_ms = None
+            pub_iso = ""
+            if pub:
+                try:
+                    dt = parsedate_to_datetime(pub)
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=datetime.timezone.utc)
+                    pub_ms = int(dt.timestamp() * 1000)
+                    pub_iso = utc_iso(dt.astimezone(datetime.timezone.utc))
+                except Exception:
+                    pub_ms = None
             if title and link:
-                items.append({"title": title, "url": link, "published": pub})
+                items.append({"title": title, "url": link, "published": pub, "published_ms": pub_ms, "published_iso": pub_iso})
             if len(items) >= max_items:
                 return items
 
@@ -91,8 +103,19 @@ def fetch_rss_items(url, max_items=50):
             pub = (entry.findtext("atom:updated", default="", namespaces=ns) or "").strip() or (
                 entry.findtext("atom:published", default="", namespaces=ns) or ""
             ).strip()
+            pub_ms = None
+            pub_iso = ""
+            if pub:
+                try:
+                    dt = datetime.datetime.fromisoformat(pub.replace("Z", "+00:00"))
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=datetime.timezone.utc)
+                    pub_ms = int(dt.timestamp() * 1000)
+                    pub_iso = utc_iso(dt.astimezone(datetime.timezone.utc))
+                except Exception:
+                    pub_ms = None
             if title and link:
-                items.append({"title": title, "url": link, "published": pub})
+                items.append({"title": title, "url": link, "published": pub, "published_ms": pub_ms, "published_iso": pub_iso})
             if len(items) >= max_items:
                 return items
 
@@ -101,6 +124,9 @@ def fetch_rss_items(url, max_items=50):
         return []
 
 def build_news_intel():
+    # Only keep items from the last 8 hours (UTC)
+    cutoff_ms = utc_ms(utc_now() - datetime.timedelta(hours=8))
+
     all_items = []
     for feed in RSS_FEEDS:
         all_items.extend(fetch_rss_items(feed, max_items=50))
@@ -115,9 +141,19 @@ def build_news_intel():
         seen.add(url)
         deduped.append(it)
 
+    # Time filter (prefer published_ms, else keep the item but it won't count as "fresh")
+    fresh = []
+    for it in deduped:
+        t = it.get("published_ms")
+        if isinstance(t, int) and t >= cutoff_ms:
+            fresh.append(it)
+        elif t is None:
+            # Keep undated items, but they will not dominate because we cap list sizes.
+            fresh.append(it)
+
     # Filter to relevant region context
     filtered = []
-    for it in deduped:
+    for it in fresh:
         text = f"{it.get('title','')} {it.get('description','')}".strip()
         if not text:
             continue
@@ -131,6 +167,7 @@ def build_news_intel():
         title = (it.get("title") or "").strip()
         url = (it.get("url") or "").strip()
         published = (it.get("published") or "").strip()
+        published_iso = (it.get("published_iso") or "").strip()
         is_alert = bool(NEWS_ALERT_RE.search(title) and NEWS_CONTEXT_RE.search(title))
         if is_alert:
             alert_count += 1
@@ -139,6 +176,7 @@ def build_news_intel():
                 "title": title,
                 "url": url,
                 "published": published,
+                "published_iso": published_iso,
                 "is_alert": is_alert,
             }
         )
@@ -169,8 +207,8 @@ def fetch_polymarket_signal():
     """
     Fetch a single Polymarket market odds snapshot (best-match heuristic).
 
-    Uses Polymarket's public Gamma API (no key). If the API is unavailable or no
-    relevant markets are found, returns None.
+    Uses Polymarket's public Gamma API (no key). Always returns an object with
+    an `odds` number so the UI doesn't get stuck on "Awaiting data".
     """
     try:
         candidates = []
@@ -259,7 +297,12 @@ def fetch_polymarket_signal():
                 break
 
         if not candidates:
-            return None
+            return {
+                "odds": 0,
+                "market": "No active Iran-related market matched",
+                "url": "https://polymarket.com/",
+                "timestamp": utc_iso(),
+            }
 
         candidates.sort(key=lambda x: x[0], reverse=True)
         _, prob, question, market_url = candidates[0]
@@ -272,7 +315,12 @@ def fetch_polymarket_signal():
             "timestamp": utc_iso(),
         }
     except Exception:
-        return None
+        return {
+            "odds": 0,
+            "market": "Polymarket unavailable",
+            "url": "https://polymarket.com/",
+            "timestamp": utc_iso(),
+        }
 
 def build_public_interest():
     gdelt_articles = 0
@@ -621,7 +669,14 @@ def compute_maritime_ntm_from_articles(articles):
     maritime advisory / navigation warning language + Strait of Hormuz context.
     """
     if not isinstance(articles, list) or not articles:
-        return None
+        return {
+            "score": 0.0,
+            "count": 0,
+            "critical": 0,
+            "detail": "No Hormuz maritime advisories detected",
+            "samples": [],
+            "timestamp": utc_iso(),
+        }
 
     import re
 
@@ -724,6 +779,16 @@ def check_airspace_warnings(aviation_count=None):
     raw_score = sum(int(n.get("score") or 0) for n in notams)
     raw_score = max(0, min(50, raw_score))
 
+    # Extra rule: if NOTAMs exist but traffic is still very high, reduce severity.
+    # User requirement: if there is NOTAM and >50 civil aircraft (proxy: current OpenSky count),
+    # lower the score (NOTAMs may be corridor/altitude advisories, not full closures).
+    if raw_score > 0 and aviation_count is not None:
+        try:
+            if int(aviation_count) > 50:
+                raw_score = int(round(raw_score * 0.4))
+        except Exception:
+            pass
+
     details = []
     for n in notams:
         sev = (n.get("severity") or "").strip().upper() or "NOTICE"
@@ -732,6 +797,12 @@ def check_airspace_warnings(aviation_count=None):
         details.append(f"{sev}: {msg} [type={typ}]")
 
     status = "Restricted" if any(n.get("type") in ("FIR_PROHIBITED", "FIR_RESTRICTED") for n in notams) else ("Caution" if raw_score > 0 else "Normal")
+    if raw_score > 0 and aviation_count is not None:
+        try:
+            if int(aviation_count) > 50:
+                status = "Caution"
+        except Exception:
+            pass
 
     print(f"  Airspace Score Contribution: {raw_score}")
     for d in details:
@@ -750,6 +821,7 @@ def check_airspace_warnings(aviation_count=None):
         "type_counts": type_counts,
         "heuristic": True,
         "note": "This is a heuristic severity estimate. NOTAMs can exist without closing the FIR; observed traffic is used as a sanity check.",
+        "aviation_count": int(aviation_count) if isinstance(aviation_count, int) else aviation_count,
         "status": status,
         "fir_codes": [TEHRAN_FIR, TEL_AVIV_FIR],
         "source_url": "https://notams.aim.faa.gov/notamSearch/",
@@ -974,13 +1046,16 @@ def run_once(push=False, local_cache=False, local_cache_path="frontend/local_cac
 
     # 2) Derived OSINT from the same news batch
     articles = news_intel.get("articles") or []
-    maritime_ntm = compute_maritime_ntm_from_articles(articles) or existing.get("maritime_ntm")
+    maritime_ntm = compute_maritime_ntm_from_articles(articles)
+    # If the 8h news window is empty, keep the last computed maritime value (avoid flapping to 0).
+    if isinstance(existing.get("maritime_ntm"), dict) and (not isinstance(articles, list) or len(articles) == 0):
+        maritime_ntm = existing.get("maritime_ntm")
     if not isinstance(maritime_ntm, dict):
         maritime_ntm = {
             "score": 0.0,
             "count": 0,
             "critical": 0,
-            "detail": "Awaiting data...",
+            "detail": "No Hormuz maritime advisories detected",
             "samples": [],
             "timestamp": utc_iso(),
         }
@@ -1031,8 +1106,16 @@ def run_once(push=False, local_cache=False, local_cache_path="frontend/local_cac
 
     # Polymarket (fetch live via public API; fallback to existing)
     polymarket = fetch_polymarket_signal()
+    if isinstance(existing.get("polymarket"), dict) and (not isinstance(polymarket, dict) or polymarket.get("market") in ("Polymarket unavailable",)):
+        # If live fetch fails, keep the last known market snapshot to avoid flapping to 0.
+        polymarket = existing.get("polymarket")
     if not isinstance(polymarket, dict):
-        polymarket = existing.get("polymarket") if isinstance(existing.get("polymarket"), dict) else {}
+        polymarket = {
+            "odds": 0,
+            "market": "Polymarket unavailable",
+            "url": "https://polymarket.com/",
+            "timestamp": utc_iso(),
+        }
     odds = float(polymarket.get("odds") or 0)
     # Sanity cap
     if odds > 95:
