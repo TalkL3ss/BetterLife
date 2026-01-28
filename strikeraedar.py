@@ -31,6 +31,57 @@ MARKET_TICKERS = {
 }
 
 # -----------------------------------------------------------------------------
+# Maritime NtM (Notices to Mariners) / Hormuz Indicator
+# -----------------------------------------------------------------------------
+def compute_maritime_ntm_from_articles(articles):
+    """
+    Derive a coarse 'Maritime NtM (Hormuz)' signal from the cached news batch.
+
+    This does NOT fetch official NAVAREA feeds. It scans titles/descriptions for
+    maritime advisory / navigation warning language + Strait of Hormuz context.
+    """
+    if not isinstance(articles, list) or not articles:
+        return None
+
+    import re
+
+    hormuz_re = re.compile(r"(strait of hormuz|\bhormuz\b|gulf of oman|persian gulf|musandam|qeshm|bandar abbas)", re.I)
+    ntm_re = re.compile(r"(notice(?:s)? to mariners|\bntm\b|navarea|navtex|navigational warning|nav warning|maritime safety information|\bmsi\b|shipping advisory|maritime (security )?advisory|ukmto|msc-hoa|imac)", re.I)
+    critical_re = re.compile(r"(avoid|do not transit|do not proceed|suspend|closure|closed|mines?|mine threat|missile|drone|uav|attack|seiz|board(?:ing)?|hijack|explosion|harass|intercept|armed|warship|irgc|\bnavy\b|tanker)", re.I)
+
+    count = 0
+    critical = 0
+    samples = []
+
+    for a in articles:
+        if not isinstance(a, dict):
+            continue
+        text = f"{a.get('title','')} {a.get('description','')} {a.get('content','')}".strip()
+        if not text:
+            continue
+
+        if hormuz_re.search(text) and ntm_re.search(text):
+            count += 1
+            if critical_re.search(text):
+                critical += 1
+            title = (a.get("title") or "").strip()
+            if title and len(samples) < 3:
+                samples.append(title)
+
+    # Score mapping (max 12) to match frontend cap
+    score = min(12, 0.5 + count * 3 + critical * 2)
+    detail = "No Hormuz maritime advisories detected" if count == 0 else f"{count} items, {critical} high-signal"
+
+    return {
+        "score": float(score),
+        "count": int(count),
+        "critical": int(critical),
+        "detail": detail,
+        "samples": samples,
+        "timestamp": datetime.datetime.now().isoformat(),
+    }
+
+# -----------------------------------------------------------------------------
 # NOTAM / Airspace Logic
 # -----------------------------------------------------------------------------
 def check_airspace_warnings():
@@ -293,6 +344,24 @@ def run_once(push=False, local_cache=False, local_cache_path="frontend/local_cac
     # Merge with existing npoint cache so we don't wipe history/news_intel/etc.
     print("\nMerging with existing npoint cache (prevents overwriting dashboard data)...")
     existing = fetch_existing_npoint(npoint_id)
+
+    # Derive Maritime NtM (Hormuz) from cached news batch when available
+    maritime_ntm = compute_maritime_ntm_from_articles((existing.get("news_intel") or {}).get("articles"))
+    if maritime_ntm is None:
+        # Preserve prior value if we can't derive a fresh one (e.g., cache missing news_intel)
+        if isinstance(existing.get("maritime_ntm"), dict):
+            maritime_ntm = existing.get("maritime_ntm")
+        else:
+            maritime_ntm = {
+                "score": 0.0,
+                "count": 0,
+                "critical": 0,
+                "detail": "Awaiting data...",
+                "samples": [],
+                "timestamp": datetime.datetime.now().isoformat(),
+            }
+    unified_data["maritime_ntm"] = maritime_ntm
+
     merged = write_merged_payload(existing, unified_data)
 
     if local_cache:

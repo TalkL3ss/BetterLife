@@ -44,10 +44,13 @@ const state = {
         news: [],
         social: [],
         flight: [],
+        maritime: [],
         tanker: [],
         military: [],
+        markets: [],
         pentagon: [],
         polymarket: [],
+        airspace: [],
         weather: [],
         gps: [],
         diplomats: []
@@ -177,6 +180,10 @@ const OSINT_SIGNALS = {
     diplomats: {
         maxContribution: 12, // higher weight: evacuations/withdrawals can precede escalation
         baseline: 0.5
+    },
+    maritime: {
+        maxContribution: 12, // Strait of Hormuz maritime Notices to Mariners / navigation warnings
+        baseline: 0.5
     }
 };
 
@@ -184,7 +191,8 @@ function analyzeOsintFromArticles(articles) {
     const out = {
         hasData: Array.isArray(articles) && articles.length > 0,
         gps: { count: 0, critical: 0, contribution: OSINT_SIGNALS.gps.baseline, detail: 'No spoofing/jamming reports detected' },
-        diplomats: { count: 0, critical: 0, contribution: OSINT_SIGNALS.diplomats.baseline, detail: 'No diplomatic movement signals detected' }
+        diplomats: { count: 0, critical: 0, contribution: OSINT_SIGNALS.diplomats.baseline, detail: 'No diplomatic movement signals detected' },
+        maritime: { count: 0, critical: 0, contribution: OSINT_SIGNALS.maritime.baseline, detail: 'No Hormuz maritime advisories detected', samples: [] }
     };
     if (!out.hasData) return out;
 
@@ -196,6 +204,11 @@ function analyzeOsintFromArticles(articles) {
     const dipAnchorRe = /(diplomat|diplomatic|embassy|consulate|ambassador|charg[ée] d'affaires|mission staff)/i;
     const dipMoveRe = /(evacuat|ordered departure|withdraw|relocat|transfer|reassign|sent home|recalled|closed|shut(ting)?|downsizing)/i;
     const dipCriticalRe = /(ordered departure|evacuat|withdraw|closed embassy|embassy closure)/i;
+
+    // Maritime NtM / navigation warnings (Strait of Hormuz + nearby chokepoints)
+    const hormuzRe = /(strait of hormuz|\bhormuz\b|gulf of oman|persian gulf|khawr|khawr fakkan|qeshm|bandar abbas|musandam)/i;
+    const ntmRe = /(notice(s)? to mariners|\bntm\b|navarea|navtex|navigational warning|nav warning|maritime safety information|\bmsi\b|maritime (security )?advisory|shipping advisory|ukmto|msc-hoa|imac)/i;
+    const maritimeCriticalRe = /(avoid|do not transit|do not proceed|suspend|closure|closed|interference|mines?|mine threat|missile|drone|uav|attack|seiz|board(ing)?|hijack|explosion|harass|intercept|armed|warship|irgc|\bnavy\b|tanker)/i;
 
     for (const a of articles) {
         const text = `${a?.title || ''} ${a?.description || ''} ${a?.content || ''}`.trim();
@@ -214,16 +227,29 @@ function analyzeOsintFromArticles(articles) {
             out.diplomats.count += 1;
             if (dipCriticalRe.test(text) || warContextRe.test(text)) out.diplomats.critical += 1;
         }
+
+        const maritimeHit = hormuzRe.test(text) && ntmRe.test(text);
+        if (maritimeHit) {
+            out.maritime.count += 1;
+            if (maritimeCriticalRe.test(text) || warContextRe.test(text)) out.maritime.critical += 1;
+            if (out.maritime.samples.length < 3) {
+                const t = (a?.title || '').trim();
+                if (t) out.maritime.samples.push(t);
+            }
+        }
     }
 
     const gps = out.gps;
     const diplomats = out.diplomats;
+    const maritime = out.maritime;
 
     gps.contribution = Math.min(OSINT_SIGNALS.gps.maxContribution, OSINT_SIGNALS.gps.baseline + gps.count * 2 + gps.critical * 1);
     diplomats.contribution = Math.min(OSINT_SIGNALS.diplomats.maxContribution, OSINT_SIGNALS.diplomats.baseline + diplomats.count * 3 + diplomats.critical * 2);
+    maritime.contribution = Math.min(OSINT_SIGNALS.maritime.maxContribution, OSINT_SIGNALS.maritime.baseline + maritime.count * 3 + maritime.critical * 2);
 
     gps.detail = gps.count === 0 ? 'No spoofing/jamming reports detected' : `${gps.count} reports, ${gps.critical} high-signal`;
     diplomats.detail = diplomats.count === 0 ? 'No diplomatic movement signals detected' : `${diplomats.count} items, ${diplomats.critical} high-signal`;
+    maritime.detail = maritime.count === 0 ? 'No Hormuz maritime advisories detected' : `${maritime.count} items, ${maritime.critical} high-signal`;
 
     return out;
 }
@@ -269,13 +295,17 @@ const INFO_CONTENT = {
         title: 'Diplomatic Posture (OSINT)',
         body: '<strong>Source:</strong> OSINT keyword extraction from the latest cached news batch (server-side)<br><br><strong>What it tracks:</strong> Mentions of embassy/consulate staff movements (evacuations, ordered departures, withdrawals, relocations).<br><br><strong>Why it matters:</strong> Diplomatic drawdowns can be a leading indicator of elevated security risk.<br><br><strong>Risk logic:</strong> Movement language + strong terms (evacuation/ordered departure) increases contribution.<br><br><strong>Max contribution:</strong> 12%'
     },
+    maritime: {
+        title: 'Maritime NtM (Hormuz)',
+        body: '<strong>Source:</strong> OSINT keyword extraction from the latest cached news batch (server-side)<br><br><strong>What it tracks:</strong> Mentions of <em>Notices to Mariners</em> / navigation warnings / shipping advisories tied to the <strong>Strait of Hormuz</strong> and nearby waters (Gulf of Oman / Persian Gulf).<br><br><strong>Why it matters:</strong> Formal maritime advisories or warnings around a chokepoint can signal heightened risk to shipping and increased operational posture.<br><br><strong>Risk logic:</strong> More independent items + stronger warning language increases contribution.<br><br><strong>Max contribution:</strong> 12%'
+    },
     pentagon: {
         title: 'Pentagon Pizza Meter',
         body: '<strong>Source:</strong> Time-based simulation (GitHub Actions)<br><br><strong>What it tracks:</strong> Simulates pizza delivery activity patterns near the Pentagon based on time of day.<br><br><strong>Risk logic:</strong> If late night hours or weekends show elevated activity, it may indicate staff working overtime = potential elevated activity.<br><br><strong>Baseline:</strong> Normal = ~10%. Spikes during unusual late-night/weekend periods.<br><br><strong>Inspiration:</strong> During the 1991 Gulf War, journalists noticed pizza deliveries to the Pentagon spiked before major operations.<br><br><strong>Max contribution:</strong> 10%'
     },
     calculation: {
         title: 'How We Calculate Risk',
-        body: '<strong>Projected Risk (Next 8 Hours) = Combined Signal Score + Short-Term Projection</strong><br><br><strong>Base Score:</strong> Sum of signals below.<br><br><strong>Projection:</strong> Uses the last ~6 hours trend slope + an IOC boost (strong indicators) to estimate the next 8 hours.<br><br>📰 <strong>News Intel (max 30%):</strong> Cached news volume + alert keywords.<br><br>📈 <strong>Public Interest (max 20%):</strong> GDELT + Wikipedia attention signals.<br><br>✈️ <strong>Civil Aviation (max 15%):</strong> Air traffic over Iran; fewer flights can indicate avoidance.<br><br>🎯 <strong>Military Trackers (max 15%):</strong> Heuristic tracked military-coded aircraft/tanker-like callsigns over the region (OSINT).<br><br>📉 <strong>Stock Markets (max 15%):</strong> Major market stress indicator.<br><br>📊 <strong>Market Odds (max 10%):</strong> Polymarket odds for related events.<br><br>🍕 <strong>Pentagon Pizza Meter (max 10%):</strong> Simulated activity pattern indicator.<br><br>🚫 <strong>Airspace NOTAMs (max 15%):</strong> Restricted/prohibited airspace warnings.<br><br>🛰️ <strong>GPS/GNSS Interference (max 8%):</strong> OSINT reports of spoofing/jamming; higher if war-context appears.<br><br>🏛️ <strong>Diplomatic Posture (max 12%):</strong> OSINT mentions of embassy staff moves (ordered departure/evacuation = strong).<br><br>🌤️ <strong>Op. Conditions (max 5%):</strong> Weather in Tehran; clearer conditions slightly increase risk contribution.<br><br><strong>IOC Highlighting:</strong> Signals with stronger attack indicators get an <strong>IOC</strong> badge and glow.<br><br><strong>Escalation Multiplier:</strong> If 3+ signals are elevated, base score gets a 15% boost.<br><br><strong>Risk Levels:</strong><br>• 0-30% = Low Risk<br>• 31-60% = Elevated<br>• 61-85% = High Risk<br>• 86-100% = Imminent'
+        body: '<strong>Projected Risk (Next 8 Hours) = Combined Signal Score + Short-Term Projection</strong><br><br><strong>Base Score:</strong> Sum of signals below.<br><br><strong>Projection:</strong> Uses the last ~6 hours trend slope + an IOC boost (strong indicators) to estimate the next 8 hours.<br><br>📰 <strong>News Intel (max 30%):</strong> Cached news volume + alert keywords.<br><br>📈 <strong>Public Interest (max 20%):</strong> GDELT + Wikipedia attention signals.<br><br>✈️ <strong>Civil Aviation (max 15%):</strong> Air traffic over Iran; fewer flights can indicate avoidance.<br><br>🚢 <strong>Maritime NtM (Hormuz) (max 12%):</strong> Shipping/navigation advisory mentions tied to the Strait of Hormuz (OSINT).<br><br>🎯 <strong>Military Trackers (max 15%):</strong> Heuristic tracked military-coded aircraft/tanker-like callsigns over the region (OSINT).<br><br>📉 <strong>Stock Markets (max 15%):</strong> Major market stress indicator.<br><br>📊 <strong>Market Odds (max 10%):</strong> Polymarket odds for related events.<br><br>🍕 <strong>Pentagon Pizza Meter (max 10%):</strong> Simulated activity pattern indicator.<br><br>🚫 <strong>Airspace NOTAMs (max 15%):</strong> Restricted/prohibited airspace warnings.<br><br>🛰️ <strong>GPS/GNSS Interference (max 8%):</strong> OSINT reports of spoofing/jamming; higher if war-context appears.<br><br>🏛️ <strong>Diplomatic Posture (max 12%):</strong> OSINT mentions of embassy staff moves (ordered departure/evacuation = strong).<br><br>🌤️ <strong>Op. Conditions (max 5%):</strong> Weather in Tehran; clearer conditions slightly increase risk contribution.<br><br><strong>IOC Highlighting:</strong> Signals with stronger attack indicators get an <strong>IOC</strong> badge and glow.<br><br><strong>Escalation Multiplier:</strong> If 3+ signals are elevated, base score gets a 15% boost.<br><br><strong>Risk Levels:</strong><br>• 0-30% = Low Risk<br>• 31-60% = Elevated<br>• 61-85% = High Risk<br>• 86-100% = Imminent'
     },
     about: {
         title: 'About BetterLife',
@@ -1073,7 +1103,7 @@ async function setCache(data, totalRisk = null) {
         const existing = await getCache();
         let history = (existing && existing.history) ? existing.history : [];
         let signalHistoryCache = (existing && existing.signalHistory) ? existing.signalHistory : {
-            news: [], social: [], flight: [], military: [], markets: [], pentagon: [], polymarket: [], airspace: [], weather: [], gps: [], diplomats: []
+            news: [], social: [], flight: [], maritime: [], military: [], markets: [], pentagon: [], polymarket: [], airspace: [], weather: [], gps: [], diplomats: []
         };
 
         // IMPORTANT: Preserve GitHub Action data (polymarket, pentagon, news_intel)
@@ -1100,7 +1130,7 @@ async function setCache(data, totalRisk = null) {
 
             // Add signal values to signal history (for sparklines)
             if (data.signalValues) {
-                ['news', 'social', 'flight', 'military', 'markets', 'polymarket', 'airspace', 'weather', 'gps', 'diplomats'].forEach(sig => {
+                ['news', 'social', 'flight', 'maritime', 'military', 'markets', 'polymarket', 'airspace', 'weather', 'gps', 'diplomats'].forEach(sig => {
                     if (data.signalValues[sig] !== undefined) {
                         signalHistoryCache[sig] = signalHistoryCache[sig] || [];
                         signalHistoryCache[sig].push(data.signalValues[sig]);
@@ -1174,6 +1204,7 @@ async function fetchFreshData() {
     const osint = analyzeOsintFromArticles(cachedData.news_intel?.articles);
     const gpsContribution = toFiniteNumber(osint?.gps?.contribution, OSINT_SIGNALS.gps.baseline);
     const diplomatsContribution = toFiniteNumber(osint?.diplomats?.contribution, OSINT_SIGNALS.diplomats.baseline);
+    const maritimeContribution = toFiniteNumber(cachedData?.maritime_ntm?.score, toFiniteNumber(osint?.maritime?.contribution, OSINT_SIGNALS.maritime.baseline));
 
     const weatherContribution = toFiniteNumber(weatherResult?.contribution, 1);
 
@@ -1207,11 +1238,14 @@ async function fetchFreshData() {
     const weatherDisplay = weatherContribution >= 4.5 ? 100 : weatherContribution >= 2.5 ? 55 : 20;
     const gpsDisplay = Math.min(100, Math.round((gpsContribution / OSINT_SIGNALS.gps.maxContribution) * 100));
     const diplomatsDisplay = Math.min(100, Math.round((diplomatsContribution / OSINT_SIGNALS.diplomats.maxContribution) * 100));
+    const maritimeDisplay = Math.min(100, Math.round((maritimeContribution / OSINT_SIGNALS.maritime.maxContribution) * 100));
 
     return {
         news: Number(news) || 0,
         interest: Number(interest) || 0,
         aviation: Number(aviation) || 0,
+        maritime: maritimeContribution,
+        maritimeDetail: cachedData?.maritime_ntm?.detail || osint?.maritime?.detail || 'Awaiting data...',
         military: Number(military) || 0,
         tanker: 0, // Deprecated
         weather: weatherContribution,
@@ -1229,6 +1263,7 @@ async function fetchFreshData() {
         pentagon: cachedData.pentagon || null,
         markets: cachedData.markets || null,
         airspace: cachedData.airspace || null,
+        maritime_ntm: cachedData.maritime_ntm || null,
         // Store history from cache
         history: cachedData.history || [],
         signalHistory: cachedData.signalHistory || {},
@@ -1246,6 +1281,7 @@ async function fetchFreshData() {
             news: newsDisplay,
             social: socialDisplay,
             flight: flightDisplay,
+            maritime: maritimeDisplay,
             military: militaryDisplay,
             markets: marketsDisplay,
             polymarket: polymarketDisplay,
@@ -1270,7 +1306,7 @@ function displayData(data, fromCache = false) {
 
     // Load signal history from cache if available
     if (data.signalHistory) {
-        ['news', 'social', 'flight', 'military', 'markets', 'pentagon', 'polymarket', 'airspace', 'weather', 'gps', 'diplomats'].forEach(sig => {
+        ['news', 'social', 'flight', 'maritime', 'military', 'markets', 'pentagon', 'polymarket', 'airspace', 'weather', 'gps', 'diplomats'].forEach(sig => {
             if (data.signalHistory[sig] && data.signalHistory[sig].length > 0) {
                 state.signalHistory[sig] = data.signalHistory[sig];
             }
@@ -1320,10 +1356,36 @@ function displayData(data, fromCache = false) {
 
     updateSignal('social', Math.round((safeInterest / 20) * 100), data.socialDetail || 'GDELT + Wikipedia');
 
+    // OSINT (derived from latest cached news batch when available)
+    const osint = analyzeOsintFromArticles(data?.news_intel?.articles);
+    const osintLive = !!osint?.hasData;
+
     const flightCount = Math.round(safeAviation * 10);
     const flightDetail = (data.flightDetail && !data.flightDetail.includes('Scanning') && !data.flightDetail.includes('Loading')) ? data.flightDetail : `${flightCount} aircraft over Iran`;
     updateSignal('flight', Math.round((safeAviation / 15) * 100), flightDetail);
     setIocFromScore('flight', Math.round((safeAviation / 15) * 100), 55, 75);
+
+    // MARITIME NTM (Hormuz) (OSINT)
+    const maritimeFromServer = !!data?.maritime_ntm;
+    const maritimeCount = maritimeFromServer ? toFiniteNumber(data?.maritime_ntm?.count, 0) : (osintLive ? toFiniteNumber(osint?.maritime?.count, 0) : 0);
+    const maritimeCritical = maritimeFromServer ? toFiniteNumber(data?.maritime_ntm?.critical, 0) : (osintLive ? toFiniteNumber(osint?.maritime?.critical, 0) : 0);
+
+    let maritimeContribution = toFiniteNumber(data.maritime, osint?.maritime?.contribution ?? OSINT_SIGNALS.maritime.baseline);
+    if (maritimeFromServer && data?.maritime_ntm?.score !== undefined) {
+        maritimeContribution = toFiniteNumber(data.maritime_ntm.score, maritimeContribution);
+    }
+    maritimeContribution = Math.max(0, Math.min(OSINT_SIGNALS.maritime.maxContribution, maritimeContribution));
+    const maritimeDetail = data.maritimeDetail || data?.maritime_ntm?.detail || osint?.maritime?.detail || 'Awaiting data...';
+    const maritimeDisplay = Math.min(100, Math.round((maritimeContribution / OSINT_SIGNALS.maritime.maxContribution) * 100));
+    updateSignal('maritime', maritimeDisplay, maritimeDetail);
+    setStatus('maritimeStatus', maritimeFromServer || osintLive);
+    if (maritimeCritical >= 1 || maritimeContribution >= 9) setIocLevel('maritime', 'high');
+    else if (maritimeCount >= 1 || maritimeContribution >= 5) setIocLevel('maritime', 'med');
+    else setIocLevel('maritime', null);
+
+    if (!fromCache && (maritimeFromServer || osintLive) && maritimeCritical >= 1) {
+        addFeed('MARITIME', '🚢 Maritime advisory/warning activity detected near Strait of Hormuz', true, 'Alert');
+    }
 
     // MILITARY (client-side heuristic)
     const safeMilitary = applyJitter(toFiniteNumber(data.military, 1), 0, 15, 1, 7);
@@ -1341,10 +1403,6 @@ function displayData(data, fromCache = false) {
     updateSignal('weather', data.weatherCondition || weatherCondition, weatherDetail);
     const weatherLive = (data.weatherFetched === undefined) ? true : !!data.weatherFetched;
     setStatus('weatherStatus', weatherLive);
-
-    // OSINT (derived from latest cached news batch when available)
-    const osint = analyzeOsintFromArticles(data?.news_intel?.articles);
-    const osintLive = !!osint?.hasData;
 
     let gpsContribution = toFiniteNumber(data.gps, osint?.gps?.contribution ?? OSINT_SIGNALS.gps.baseline);
     gpsContribution = Math.max(0, Math.min(OSINT_SIGNALS.gps.maxContribution, gpsContribution));
@@ -1574,9 +1632,9 @@ function displayData(data, fromCache = false) {
     updatePyLastUpdate(data);
 
     // Base score (acts as "now" score) from signals
-    let total = safeNews + safeInterest + safeAviation + safeMilitary + marketsContribution + safePolymarketCalc + airspaceContribution + pentagonContribution + safeWeather + gpsContribution + diplomatsContribution;
+    let total = safeNews + safeInterest + safeAviation + maritimeContribution + safeMilitary + marketsContribution + safePolymarketCalc + airspaceContribution + pentagonContribution + safeWeather + gpsContribution + diplomatsContribution;
 
-    const elevated = [safeNews > 10, safeInterest > 8, safeAviation > 10, safeMilitary > 6, marketsContribution > 5, airspaceContribution > 5, pentagonContribution > 5, gpsContribution > 3, diplomatsContribution > 4].filter(Boolean).length;
+    const elevated = [safeNews > 10, safeInterest > 8, safeAviation > 10, maritimeContribution > 4, safeMilitary > 6, marketsContribution > 5, airspaceContribution > 5, pentagonContribution > 5, gpsContribution > 3, diplomatsContribution > 4].filter(Boolean).length;
     if (elevated >= 3) {
         total = Math.min(100, total * 1.15);
         if (!fromCache) addFeed('SYSTEM', 'Multiple elevated signals detected - escalation multiplier applied', true, 'Alert');
@@ -1614,6 +1672,9 @@ function displayData(data, fromCache = false) {
     if (diplomatsContribution >= 9 || osintDipCritical >= 1) iocScore += 2;
     else if (diplomatsContribution >= 5 || osintDipCount >= 1) iocScore += 1;
 
+    if (maritimeContribution >= 9 || maritimeCritical >= 1) iocScore += 2;
+    else if (maritimeContribution >= 5 || maritimeCount >= 1) iocScore += 1;
+
     const projectedTotal = projectRiskNext8Hours(total, data?.history || [], iocScore);
 
     const prevRisk = state.risk;
@@ -1629,6 +1690,7 @@ function displayData(data, fromCache = false) {
                 news: safeNews,
                 interest: safeInterest,
                 aviation: safeAviation,
+                maritime: maritimeContribution,
                 military: safeMilitary,
                 markets: marketsContribution,
                 polymarket: safePolymarketCalc,
@@ -1677,6 +1739,8 @@ function displayData(data, fromCache = false) {
                     reasons.push(`Military activity down (${militaryDetail})`);
                 } else if (x.k === 'news') {
                     reasons.push(`News pressure lower (${curr.newsAlertCount} critical)`);
+                } else if (x.k === 'maritime') {
+                    reasons.push('Maritime advisories eased');
                 } else if (x.k === 'airspace') {
                     reasons.push('Airspace restrictions easing');
                 } else if (x.k === 'gps') {
@@ -1705,6 +1769,7 @@ function displayData(data, fromCache = false) {
                 news: safeNews,
                 interest: safeInterest,
                 aviation: safeAviation,
+                maritime: maritimeContribution,
                 military: safeMilitary,
                 markets: marketsContribution,
                 polymarket: safePolymarketCalc,
@@ -1732,6 +1797,7 @@ function displayData(data, fromCache = false) {
         news_score: Math.round(safeNews),
         interest_score: Math.round(safeInterest),
         aviation_score: Math.round(safeAviation),
+        maritime_score: Math.round(maritimeContribution),
         military_score: Math.round(safeMilitary),
         markets_score: Math.round(marketsContribution),
         airspace_score: Math.round(airspaceContribution),

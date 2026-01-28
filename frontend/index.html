@@ -158,6 +158,20 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
             </div>
 
             <div class="signal-item">
+                <div class="signal-icon maritime">🚢</div>
+                <div class="signal-info">
+                    <div class="signal-name">Maritime NtM (Hormuz) <span class="signal-status weak"
+                            id="maritimeStatus">WEAK</span><button class="info-btn"
+                            onclick="showInfo('maritime')">i</button></div>
+                    <div class="signal-detail" id="maritimeDetail">Awaiting data...</div>
+                </div>
+                <div class="signal-right">
+                    <div class="signal-sparkline" id="maritimeSparkline"></div>
+                    <div class="signal-value" id="maritimeValue">--</div>
+                </div>
+            </div>
+
+            <div class="signal-item">
                 <div class="signal-icon military">🎯</div>
                 <div class="signal-info">
                     <div class="signal-name">Military Trackers <span class="signal-status weak"
