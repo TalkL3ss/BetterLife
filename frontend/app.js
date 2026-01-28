@@ -317,7 +317,7 @@ const INFO_CONTENT = {
     },
     pentagon: {
         title: 'Pentagon Pizza Meter',
-        body: '<strong>Source:</strong> Time-based simulation (GitHub Actions)<br><br><strong>What it tracks:</strong> Simulates pizza delivery activity patterns near the Pentagon based on time of day.<br><br><strong>Risk logic:</strong> If late night hours or weekends show elevated activity, it may indicate staff working overtime = potential elevated activity.<br><br><strong>Baseline:</strong> Normal = ~10%. Spikes during unusual late-night/weekend periods.<br><br><strong>Inspiration:</strong> During the 1991 Gulf War, journalists noticed pizza deliveries to the Pentagon spiked before major operations.<br><br><strong>Max contribution:</strong> 10%'
+        body: '<strong>Source:</strong> PizzInt (pizzint.watch) + time-based simulation fallback<br><br><strong>What it tracks:</strong> Signals suggesting elevated late-hour activity near the Pentagon (historically associated with spikes in after-hours operations).<br><br><strong>Risk logic:</strong> Unusual late-night/weekend activity increases contribution.<br><br><strong>Baseline:</strong> Normal = ~10%. Spikes during unusual late-night/weekend periods.<br><br><strong>Max contribution:</strong> 10%'
     },
     calculation: {
         title: 'How We Calculate Risk',
@@ -470,7 +470,7 @@ const SOURCE_URLS = {
     maritime: 'https://www.ukmto.org/',
     military: 'https://opensky-network.org/',
     markets: 'https://finance.yahoo.com/',
-    pentagon: 'https://en.wikipedia.org/wiki/Pentagon_Pizza_Index',
+    pentagon: 'https://pizzint.watch',
     polymarket: 'https://polymarket.com/',
     airspace: 'https://notams.aim.faa.gov/notamSearch/',
     weather: 'https://openweathermap.org/api',
@@ -584,6 +584,32 @@ function closeSourceMenu() {
     menu.innerHTML = '';
 }
 
+function copyText(text) {
+    const t = String(text || '');
+    if (!t) return;
+    try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(t);
+            showToast('✅ Copied link');
+            return;
+        }
+    } catch (e) { }
+    // Fallback for older browsers
+    try {
+        const ta = document.createElement('textarea');
+        ta.value = t;
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        ta.remove();
+        showToast('✅ Copied link');
+    } catch (e) {
+        showToast('⚠️ Copy not supported');
+    }
+}
+
 function openSourceMenu(anchorEl, title, sources) {
     const menu = document.getElementById('sourceMenu');
     if (!menu) return;
@@ -608,23 +634,44 @@ function openSourceMenu(anchorEl, title, sources) {
     for (const s of (Array.isArray(sources) ? sources : [])) {
         const url = safeExternalUrl(s?.url);
         if (!url) continue;
-        const a = document.createElement('a');
-        a.className = 'source-menu-item';
-        a.href = url;
-        a.target = '_blank';
-        a.rel = 'noopener noreferrer';
+        const item = document.createElement('div');
+        item.className = 'source-menu-item';
+
+        const head = document.createElement('div');
+        head.className = 'source-menu-item-head';
 
         const t = document.createElement('div');
         t.className = 'source-menu-item-title';
         t.textContent = String(s?.title || 'Source').trim() || 'Source';
 
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'source-copy-btn';
+        btn.textContent = 'Copy';
+        btn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            copyText(url);
+        });
+
+        head.appendChild(t);
+        head.appendChild(btn);
+
         const u = document.createElement('div');
         u.className = 'source-menu-item-url';
         u.textContent = url;
 
-        a.appendChild(t);
-        a.appendChild(u);
-        list.appendChild(a);
+        const open = document.createElement('a');
+        open.href = url;
+        open.target = '_blank';
+        open.rel = 'noopener noreferrer';
+        open.style.textDecoration = 'none';
+        open.style.color = 'inherit';
+        open.appendChild(head);
+        open.appendChild(u);
+
+        item.appendChild(open);
+        list.appendChild(item);
     }
 
     menu.appendChild(header);
@@ -2431,8 +2478,20 @@ function updateChartFromHistory(history) {
     chart.update('none');
 }
 
+function primeStaticSourceMenus() {
+    const tickerByRegion = { US: '^GSPC', ISRAEL: 'EIS', BITCOIN: 'BTC-USD', ETHEREUM: 'ETH-USD' };
+    const marketSources = Object.entries(tickerByRegion).map(([region, t]) => ({
+        title: `${region} · ${t}`,
+        url: `https://finance.yahoo.com/quote/${encodeURIComponent(t)}`
+    }));
+    setSourceLinkOrMenu('marketsSource', 'Stock Markets (Yahoo Finance)', marketSources, SOURCE_URLS.markets, true);
+    setSourceLinkOrMenu('polymarketSource', 'Market Odds (Polymarket)', [{ title: 'Polymarket', url: SOURCE_URLS.polymarket }], SOURCE_URLS.polymarket, true);
+    setSourceLinkOrMenu('airspaceSource', 'Airspace NOTAMs', [{ title: 'FAA NOTAM Search', url: SOURCE_URLS.airspace }], SOURCE_URLS.airspace, true);
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
     attachSourceMenuHandlers();
+    primeStaticSourceMenus();
     // Load history first for chart
     const cached = await getCache();
     initChart(cached?.history);

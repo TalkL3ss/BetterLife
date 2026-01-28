@@ -57,11 +57,14 @@ NEWS_ALERT_RE = re.compile(
     re.I,
 )
 
-def _http_get(url, timeout=15):
+def _http_get(url, timeout=15, extra_headers=None):
+    # Use a browser-like UA to reduce the chance of being blocked by common bot filters/CDNs.
     headers = {
-        "User-Agent": "BetterLife/1.0 (+https://{PLACEHOLDER}.github.io/{placeholder})",
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
         "Accept": "*/*",
     }
+    if isinstance(extra_headers, dict):
+        headers.update({k: v for k, v in extra_headers.items() if v is not None})
     return requests.get(url, headers=headers, timeout=timeout)
 
 def fetch_rss_items(url, max_items=50):
@@ -214,12 +217,40 @@ def fetch_polymarket_signal():
         candidates = []
 
         # Pull a small window of active markets and pick the best match by keywords + volume/liquidity.
+        # Gamma is sometimes behind aggressive caching/CDN rules; send browser-ish headers.
+        pm_headers = {
+            "Accept": "application/json",
+            "Referer": "https://polymarket.com/",
+            "Origin": "https://polymarket.com",
+        }
         for offset in (0, 100, 200):
             url = f"https://gamma-api.polymarket.com/markets?closed=false&active=true&limit=100&offset={offset}"
-            r = _http_get(url, timeout=20)
-            if r.status_code != 200:
+
+            r = None
+            for attempt in range(3):
+                try:
+                    r = _http_get(url, timeout=25, extra_headers=pm_headers)
+                except Exception:
+                    r = None
+                if r is None:
+                    time.sleep(0.5 + attempt * 0.7)
+                    continue
+                if r.status_code in (429, 500, 502, 503, 504):
+                    time.sleep(0.7 + attempt * 1.1)
+                    continue
+                break
+
+            if not r or r.status_code != 200:
                 continue
-            data = r.json()
+
+            try:
+                data = r.json()
+            except Exception:
+                continue
+
+            # API shape can vary: accept list or {data:[...]} / {markets:[...]}
+            if isinstance(data, dict):
+                data = data.get("data") or data.get("markets") or []
             if not isinstance(data, list):
                 continue
 

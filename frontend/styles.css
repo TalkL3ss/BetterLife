@@ -659,6 +659,32 @@ body {
     overflow: visible;
     word-break: break-word;
     overflow-wrap: anywhere;
+    user-select: text;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+.source-menu-item-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 4px;
+}
+
+.source-copy-btn {
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text-muted);
+    border-radius: 999px;
+    padding: 2px 8px;
+    font-size: 10px;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.source-copy-btn:hover {
+    color: var(--text);
+    border-color: rgba(255, 255, 255, 0.16);
 }
 
 .signal-right {
