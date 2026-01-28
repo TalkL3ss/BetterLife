@@ -121,7 +121,7 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
                     <div class="signal-name">News Intel <span class="signal-status live"
                             id="newsStatus">LIVE</span><button class="info-btn" onclick="showInfo('news')">i</button><a
                             class="source-btn" id="newsSource" href="#" target="_blank" rel="noopener noreferrer"
-                            aria-label="Open News Intel source">↗</a>
+                            aria-label="Open News Intel source" data-signal="news">↗</a>
                     </div>
                     <div class="signal-detail" id="newsDetail">Loading...</div>
                 </div>
@@ -138,7 +138,7 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
                             id="trendsStatus">LIVE</span><button class="info-btn"
                             onclick="showInfo('trends')">i</button><a class="source-btn" id="trendsSource" href="#"
                             target="_blank" rel="noopener noreferrer"
-                            aria-label="Open Public Interest source">↗</a></div>
+                            aria-label="Open Public Interest source" data-signal="trends">↗</a></div>
                     <div class="signal-detail" id="socialDetail">Loading...</div>
                 </div>
                 <div class="signal-right">
@@ -154,7 +154,7 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
                             id="flightStatus">LIVE</span><button class="info-btn"
                             onclick="showInfo('aviation')">i</button><a class="source-btn" id="flightSource" href="#"
                             target="_blank" rel="noopener noreferrer"
-                            aria-label="Open Civil Aviation source">↗</a></div>
+                            aria-label="Open Civil Aviation source" data-signal="flight">↗</a></div>
                     <div class="signal-detail" id="flightDetail">Loading...</div>
                 </div>
                 <div class="signal-right">
@@ -170,7 +170,7 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
                             id="maritimeStatus">WEAK</span><button class="info-btn"
                             onclick="showInfo('maritime')">i</button><a class="source-btn" id="maritimeSource"
                             href="#" target="_blank" rel="noopener noreferrer"
-                            aria-label="Open Maritime NtM source">↗</a></div>
+                            aria-label="Open Maritime NtM source" data-signal="maritime">↗</a></div>
                     <div class="signal-detail" id="maritimeDetail">Awaiting data...</div>
                 </div>
                 <div class="signal-right">
@@ -186,7 +186,7 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
                             id="militaryStatus">WEAK</span><button class="info-btn"
                             onclick="showInfo('military')">i</button><a class="source-btn" id="militarySource"
                             href="#" target="_blank" rel="noopener noreferrer"
-                            aria-label="Open Military Trackers source">↗</a></div>
+                            aria-label="Open Military Trackers source" data-signal="military">↗</a></div>
                     <div class="signal-detail" id="militaryDetail">Awaiting data...</div>
                 </div>
                 <div class="signal-right">
@@ -202,7 +202,7 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
                             id="weatherStatus">CACHE</span><button class="info-btn"
                             onclick="showInfo('weather')">i</button><a class="source-btn" id="weatherSource" href="#"
                             target="_blank" rel="noopener noreferrer"
-                            aria-label="Open Weather source">↗</a></div>
+                            aria-label="Open Weather source" data-signal="weather">↗</a></div>
                     <div class="signal-detail" id="weatherDetail">Awaiting data...</div>
                 </div>
                 <div class="signal-right">
@@ -218,7 +218,7 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
                             id="marketsStatus">LIVE</span><button class="info-btn"
                             onclick="showInfo('markets')">i</button><a class="source-btn" id="marketsSource" href="#"
                             target="_blank" rel="noopener noreferrer"
-                            aria-label="Open Markets source">↗</a></div>
+                            aria-label="Open Markets source" data-signal="markets">↗</a></div>
                     <div class="signal-detail" id="marketsDetail">Loading...</div>
                 </div>
                 <div class="signal-right">
@@ -234,7 +234,7 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
                             id="pentagonStatus">LIVE</span><button class="info-btn"
                             onclick="showInfo('pentagon')">i</button><a class="source-btn" id="pentagonSource" href="#"
                             target="_blank" rel="noopener noreferrer"
-                            aria-label="Open Pentagon Pizza source">↗</a></div>
+                            aria-label="Open Pentagon Pizza source" data-signal="pentagon">↗</a></div>
                     <div class="signal-detail" id="pentagonDetail">Loading...</div>
                 </div>
                 <div class="signal-right">
@@ -250,7 +250,7 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
                             id="polymarketStatus">LIVE</span><button class="info-btn"
                             onclick="showInfo('polymarket')">i</button><a class="source-btn" id="polymarketSource"
                             href="#" target="_blank" rel="noopener noreferrer"
-                            aria-label="Open Market Odds source">↗</a></div>
+                            aria-label="Open Market Odds source" data-signal="polymarket">↗</a></div>
                     <div class="signal-detail" id="polymarketDetail">Loading...</div>
                 </div>
                 <div class="signal-right">
@@ -266,7 +266,7 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
                             id="airspaceStatus">LIVE</span><button class="info-btn"
                             onclick="showInfo('airspace')">i</button><a class="source-btn" id="airspaceSource"
                             href="#" target="_blank" rel="noopener noreferrer"
-                            aria-label="Open NOTAMs source">↗</a></div>
+                            aria-label="Open NOTAMs source" data-signal="airspace">↗</a></div>
                     <div class="signal-detail" id="airspaceDetail">Loading...</div>
                 </div>
                 <div class="signal-right">
@@ -282,7 +282,7 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
                             id="gpsStatus">WEAK</span><button class="info-btn"
                             onclick="showInfo('gps')">i</button><a class="source-btn" id="gpsSource" href="#"
                             target="_blank" rel="noopener noreferrer"
-                            aria-label="Open GPS/GNSS OSINT source">↗</a></div>
+                            aria-label="Open GPS/GNSS OSINT source" data-signal="gps">↗</a></div>
                     <div class="signal-detail" id="gpsDetail">Awaiting data...</div>
                 </div>
                 <div class="signal-right">
@@ -298,7 +298,7 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
                             id="diplomatsStatus">WEAK</span><button class="info-btn"
                             onclick="showInfo('diplomats')">i</button><a class="source-btn" id="diplomatsSource"
                             href="#" target="_blank" rel="noopener noreferrer"
-                            aria-label="Open Diplomatic OSINT source">↗</a></div>
+                            aria-label="Open Diplomatic OSINT source" data-signal="diplomats">↗</a></div>
                     <div class="signal-detail" id="diplomatsDetail">Awaiting data...</div>
                 </div>
                 <div class="signal-right">
@@ -349,6 +349,9 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
             <div class="modal-body" id="infoBody"></div>
         </div>
     </div>
+
+    <!-- Sources dropdown -->
+    <div class="source-menu" id="sourceMenu" aria-hidden="true"></div>
 
     <script src="app.js"></script>
     <script>

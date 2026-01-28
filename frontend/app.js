@@ -35,6 +35,7 @@ const state = {
     seenHeadlines: new Set(),
     trendData: [],
     trendLabels: [],
+    sourceLists: {},
     // Cache last known values for when APIs fail
     lastKnown: {
         aviation: { value: 5, detail: 'Cached data' }
@@ -309,7 +310,7 @@ const INFO_CONTENT = {
     },
     about: {
         title: 'About BetterLife',
-        body: '<strong>⚠️ Disclaimer</strong><br><br>This is an <strong>experimental project</strong> for informational purposes only.<br><br><strong>NOT:</strong><br>• Official intelligence<br>• Verified predictions<br>• Basis for decisions<br><br><strong>Data Sources</strong><br>• NewsData.io<br>• GDELT Project<br>• Wikipedia<br>• Aviationstack<br>• OpenWeatherMap<br><br><strong>Limitations</strong><br>Cannot account for classified intel, private channels, or most behind-the-scenes diplomatic activity. One data point among many.<br><br><em>Stay informed. Think critically.</em>'
+        body: '<strong>⚠️ Disclaimer</strong><br><br>This is an <strong>experimental project</strong> for informational purposes only.<br><br><strong>NOT:</strong><br>• Official intelligence<br>• Verified predictions<br>• Basis for decisions<br><br><strong>Data Sources</strong><br>• NewsData.io<br>• GDELT Project<br>• Wikipedia<br>• Aviationstack<br>• OpenWeatherMap<br><br><strong>Credits</strong><br>Original author/project inspiration: <a href="https://backyonatan-alt.github.io/aegis/" target="_blank" rel="noopener noreferrer">https://backyonatan-alt.github.io/aegis/</a><br><br><strong>Limitations</strong><br>Cannot account for classified intel, private channels, or most behind-the-scenes diplomatic activity. One data point among many.<br><br><em>Stay informed. Think critically.</em>'
     }
 };
 
@@ -430,6 +431,21 @@ function getFirstArticleUrl(articles) {
     return null;
 }
 
+function getArticleSources(articles, max = 6) {
+    if (!Array.isArray(articles)) return [];
+    const out = [];
+    const seen = new Set();
+    for (const a of articles) {
+        const url = safeExternalUrl(a?.url) || safeExternalUrl(a?.link) || safeExternalUrl(a?.source_url);
+        if (!url || seen.has(url)) continue;
+        const title = String(a?.title || a?.headline || 'Source').trim() || 'Source';
+        out.push({ title, url });
+        seen.add(url);
+        if (out.length >= max) break;
+    }
+    return out;
+}
+
 const SOURCE_URLS = {
     news: null, // dynamic (article) fallback is set in updateSourceLinks
     trends: 'https://www.gdeltproject.org/',
@@ -452,32 +468,129 @@ function setSourceLink(id, url) {
     if (!safe) {
         el.setAttribute('href', '#');
         el.classList.add('disabled');
+        el.classList.remove('multi');
+        delete state.sourceLists[el.dataset?.signal || id];
         return;
     }
     el.classList.remove('disabled');
+    el.classList.remove('multi');
     el.setAttribute('href', safe);
 }
 
 function updateSourceLinks(data) {
     const articles = data?.news_intel?.articles;
-    const firstArticle = getFirstArticleUrl(articles);
+    const sources = getArticleSources(articles, 8);
+    const firstArticle = sources.length === 1 ? sources[0].url : getFirstArticleUrl(articles);
 
     const polymarketUrl = safeExternalUrl(data?.polymarket?.url) ||
         safeExternalUrl(data?.polymarket?.market_url) ||
         SOURCE_URLS.polymarket;
 
-    setSourceLink('newsSource', firstArticle || 'https://www.bbc.com/news');
+    setSourceLinkOrMenu('newsSource', 'News Intel', sources, firstArticle || 'https://www.bbc.com/news');
     setSourceLink('trendsSource', SOURCE_URLS.trends);
     setSourceLink('flightSource', SOURCE_URLS.aviation);
-    setSourceLink('maritimeSource', firstArticle || SOURCE_URLS.maritime);
+    setSourceLinkOrMenu('maritimeSource', 'Maritime NtM (Hormuz)', sources, firstArticle || SOURCE_URLS.maritime);
     setSourceLink('militarySource', SOURCE_URLS.military);
     setSourceLink('weatherSource', SOURCE_URLS.weather);
     setSourceLink('marketsSource', SOURCE_URLS.markets);
     setSourceLink('pentagonSource', SOURCE_URLS.pentagon);
     setSourceLink('polymarketSource', polymarketUrl);
     setSourceLink('airspaceSource', SOURCE_URLS.airspace);
-    setSourceLink('gpsSource', firstArticle || 'https://www.gdeltproject.org/');
-    setSourceLink('diplomatsSource', firstArticle || 'https://www.state.gov/');
+    setSourceLinkOrMenu('gpsSource', 'GPS/GNSS Interference', sources, firstArticle || 'https://www.gdeltproject.org/');
+    setSourceLinkOrMenu('diplomatsSource', 'Diplomatic Posture', sources, firstArticle || 'https://www.state.gov/');
+}
+
+function setSourceLinkOrMenu(id, title, sources, fallbackUrl) {
+    const el = document.getElementById(id);
+    if (!el) return;
+
+    const list = Array.isArray(sources) ? sources.filter(s => safeExternalUrl(s?.url)) : [];
+    const signalKey = el.dataset?.signal || id;
+
+    if (list.length <= 1) {
+        if (list.length === 1) {
+            state.sourceLists[signalKey] = list;
+            setSourceLink(id, list[0].url);
+        } else {
+            delete state.sourceLists[signalKey];
+            setSourceLink(id, fallbackUrl);
+        }
+        el.dataset.menuTitle = title;
+        return;
+    }
+
+    // Multi-source: open scrollable menu instead of navigating directly.
+    state.sourceLists[signalKey] = list;
+    el.dataset.menuTitle = title;
+    el.classList.remove('disabled');
+    el.classList.add('multi');
+    el.setAttribute('href', '#');
+}
+
+function closeSourceMenu() {
+    const menu = document.getElementById('sourceMenu');
+    if (!menu) return;
+    menu.classList.remove('open');
+    menu.setAttribute('aria-hidden', 'true');
+    menu.innerHTML = '';
+}
+
+function openSourceMenu(anchorEl, title, sources) {
+    const menu = document.getElementById('sourceMenu');
+    if (!menu) return;
+
+    menu.innerHTML = '';
+
+    const header = document.createElement('div');
+    header.className = 'source-menu-title';
+    const headerText = document.createElement('span');
+    headerText.textContent = title || 'Sources';
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'source-menu-close';
+    closeBtn.type = 'button';
+    closeBtn.textContent = '×';
+    closeBtn.addEventListener('click', () => closeSourceMenu());
+    header.appendChild(headerText);
+    header.appendChild(closeBtn);
+
+    const list = document.createElement('div');
+    list.className = 'source-menu-list';
+
+    for (const s of (Array.isArray(sources) ? sources : [])) {
+        const url = safeExternalUrl(s?.url);
+        if (!url) continue;
+        const a = document.createElement('a');
+        a.className = 'source-menu-item';
+        a.href = url;
+        a.target = '_blank';
+        a.rel = 'noopener noreferrer';
+
+        const t = document.createElement('div');
+        t.className = 'source-menu-item-title';
+        t.textContent = String(s?.title || 'Source').trim() || 'Source';
+
+        const u = document.createElement('div');
+        u.className = 'source-menu-item-url';
+        u.textContent = url;
+
+        a.appendChild(t);
+        a.appendChild(u);
+        list.appendChild(a);
+    }
+
+    menu.appendChild(header);
+    menu.appendChild(list);
+
+    const rect = anchorEl.getBoundingClientRect();
+    const margin = 8;
+    const desiredTop = rect.bottom + margin;
+    const desiredLeft = Math.min(window.innerWidth - margin - 360, Math.max(margin, rect.left - 240));
+
+    menu.style.left = `${Math.max(margin, desiredLeft)}px`;
+    menu.style.top = `${Math.min(window.innerHeight - margin - 240, desiredTop)}px`;
+
+    menu.classList.add('open');
+    menu.setAttribute('aria-hidden', 'false');
 }
 
 function startCountdown() {
@@ -611,6 +724,35 @@ function toggleFeed() {
     const isExpanded = document.getElementById('feedList').classList.toggle('expanded');
     trackEvent('feed_toggle', 'engagement', isExpanded ? 'expanded' : 'collapsed');
     renderFeed();
+}
+
+function attachSourceMenuHandlers() {
+    // Data signals source buttons (multi-source)
+    document.addEventListener('click', (e) => {
+        const a = e.target?.closest?.('a.source-btn.multi');
+        if (!a) return;
+        e.preventDefault();
+        const key = a.dataset?.signal || a.id;
+        const sources = state.sourceLists?.[key] || [];
+        const title = a.dataset?.menuTitle || 'Sources';
+        openSourceMenu(a, title, sources);
+    });
+
+    // Close menu on outside click / ESC
+    document.addEventListener('click', (e) => {
+        const menu = document.getElementById('sourceMenu');
+        if (!menu || !menu.classList.contains('open')) return;
+        if (e.target?.closest?.('#sourceMenu')) return;
+        if (e.target?.closest?.('a.source-btn.multi')) return;
+        closeSourceMenu();
+    });
+
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') closeSourceMenu();
+    });
+
+    window.addEventListener('resize', () => closeSourceMenu());
+    window.addEventListener('scroll', () => closeSourceMenu(), true);
 }
 
 function initChart(historyData = null) {
@@ -2226,11 +2368,13 @@ function updateChartFromHistory(history) {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
+    attachSourceMenuHandlers();
     // Load history first for chart
     const cached = await getCache();
     initChart(cached?.history);
     addFeed('SYSTEM', 'BetterLife initialized');
     updatePyLastUpdate(cached);
+    if (cached) updateSourceLinks(cached);
 
     // Track page load event
     gtag('event', 'page_load', {

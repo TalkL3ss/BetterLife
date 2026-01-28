@@ -559,6 +559,85 @@ body {
     pointer-events: none;
 }
 
+.source-menu {
+    position: fixed;
+    z-index: 250;
+    display: none;
+    min-width: 220px;
+    max-width: min(360px, 84vw);
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: 0 18px 60px rgba(0, 0, 0, 0.45);
+    padding: 10px;
+}
+
+.source-menu.open {
+    display: block;
+}
+
+.source-menu-title {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.source-menu-close {
+    width: 24px;
+    height: 24px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--card-elevated);
+    color: var(--text-muted);
+    cursor: pointer;
+}
+
+.source-menu-close:hover {
+    color: var(--text);
+}
+
+.source-menu-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 180px;
+    overflow-y: auto;
+    padding-right: 2px;
+}
+
+.source-menu-item {
+    display: block;
+    padding: 8px 10px;
+    background: var(--card-elevated);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    text-decoration: none;
+    color: var(--text);
+}
+
+.source-menu-item:hover {
+    border-color: rgba(255, 255, 255, 0.16);
+}
+
+.source-menu-item-title {
+    font-size: 12px;
+    font-weight: 600;
+    margin-bottom: 2px;
+}
+
+.source-menu-item-url {
+    font-size: 10px;
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
 .signal-right {
     display: flex;
     align-items: center;
