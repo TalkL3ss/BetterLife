@@ -269,7 +269,7 @@ const INFO_CONTENT = {
     },
     markets: {
         title: 'Stock Markets',
-        body: '<strong>Source:</strong> S&P 500 (US), Israel ETF (IL), and Bitcoin (BTC)<br><br><strong>What it tracks:</strong> Rapid risk-off moves that may correlate with escalation fears.<br><br><strong>Special note (BTC):</strong> Bitcoin trades <strong>24/7</strong>, so its move has extra weight when estimating short-term sentiment.<br><br><strong>Risk logic:</strong><br>• Markets mostly green = lower risk contribution<br>• Sharp BTC selloff (live) adds extra risk weight<br><br><strong>Max contribution:</strong> 15%'
+        body: '<strong>Source:</strong> S&P 500 (US), Israel ETF (IL), Bitcoin (BTC), and Ethereum (ETH)<br><br><strong>What it tracks:</strong> Rapid risk-off moves that may correlate with escalation fears.<br><br><strong>Special note (BTC/ETH):</strong> Crypto trades <strong>24/7</strong>, so BTC/ETH moves have extra weight when estimating short-term sentiment.<br><br><strong>Risk logic:</strong><br>• Markets mostly green = lower risk contribution<br>• Sharp BTC/ETH selloff (live) adds extra risk weight<br><br><strong>Max contribution:</strong> 15%'
     },
     airspace: {
         title: 'Airspace NOTAMs',
@@ -1218,6 +1218,7 @@ async function fetchFreshData() {
         const usChange = toFiniteNumber(cachedData.markets.data.US?.change_percent, 0);
         const ilChange = toFiniteNumber(cachedData.markets.data.ISRAEL?.change_percent, 0);
         const btcChange = toFiniteNumber(cachedData.markets.data.BITCOIN?.change_percent, 0);
+        const ethChange = toFiniteNumber(cachedData.markets.data.ETHEREUM?.change_percent, 0);
 
         const scoreFromChange = (change, thresholds) => {
             for (const [limit, score] of thresholds) {
@@ -1229,7 +1230,8 @@ async function fetchFreshData() {
         const usScore = scoreFromChange(usChange, [[-2.0, 6], [-1.0, 4], [-0.5, 2]]);
         const ilScore = scoreFromChange(ilChange, [[-2.5, 6], [-1.2, 4], [-0.6, 2]]);
         const btcScore = scoreFromChange(btcChange, [[-6.0, 8], [-3.0, 6], [-1.5, 4], [-0.7, 2]]);
-        const contribution = Math.min(15, usScore + ilScore + btcScore);
+        const ethScore = scoreFromChange(ethChange, [[-7.0, 7], [-4.0, 5], [-2.0, 3], [-1.0, 2]]);
+        const contribution = Math.min(15, usScore + ilScore + btcScore + ethScore);
         marketsDisplay = Math.min(100, Math.round((contribution / 15) * 100));
     }
     const polymarketOdds = cachedData.polymarket?.odds || 0;
@@ -1444,6 +1446,7 @@ function displayData(data, fromCache = false) {
         const usChange = toFiniteNumber(data.markets.data.US?.change_percent, 0);
         const ilChange = toFiniteNumber(data.markets.data.ISRAEL?.change_percent, 0);
         const btcChange = toFiniteNumber(data.markets.data.BITCOIN?.change_percent, 0);
+        const ethChange = toFiniteNumber(data.markets.data.ETHEREUM?.change_percent, 0);
 
         const scoreFromChange = (change, thresholds) => {
             // change is % day-over-day (negative = risk)
@@ -1457,8 +1460,10 @@ function displayData(data, fromCache = false) {
         const ilScore = scoreFromChange(ilChange, [[-2.5, 6], [-1.2, 4], [-0.6, 2]]);
         // Special BTC weight: higher max, because it's live 24/7
         const btcScore = scoreFromChange(btcChange, [[-6.0, 8], [-3.0, 6], [-1.5, 4], [-0.7, 2]]);
+        // ETH is also 24/7; slightly lower weight than BTC but still significant
+        const ethScore = scoreFromChange(ethChange, [[-7.0, 7], [-4.0, 5], [-2.0, 3], [-1.0, 2]]);
 
-        marketsContribution = Math.min(15, usScore + ilScore + btcScore);
+        marketsContribution = Math.min(15, usScore + ilScore + btcScore + ethScore);
         const displayRisk = Math.min(100, Math.round((marketsContribution / 15) * 100));
         
         // Build detailed string showing all markets
@@ -1468,6 +1473,7 @@ function displayData(data, fromCache = false) {
             if (data.markets.data.US) states.push(`US${data.markets.data.US.status === 'RED' ? '🔴' : '🟢'}`);
             if (data.markets.data.ISRAEL) states.push(`IL${data.markets.data.ISRAEL.status === 'RED' ? '🔴' : '🟢'}`);
             if (data.markets.data.BITCOIN) states.push(`BTC${data.markets.data.BITCOIN.status === 'RED' ? '🔴' : '🟢'}`);
+            if (data.markets.data.ETHEREUM) states.push(`ETH${data.markets.data.ETHEREUM.status === 'RED' ? '🔴' : '🟢'}`);
             if (states.length > 0) detailStr = states.join(' ');
         }
         
@@ -1475,7 +1481,12 @@ function displayData(data, fromCache = false) {
         setStatus('marketsStatus', true);
 
         // Add feed item if significant
-        if (!fromCache && btcScore >= 6) addFeed('MARKETS', `BTC selloff ${btcChange.toFixed(2)}% (24/7 risk sentiment)`, true, 'Alert');
+        if (!fromCache && (btcScore >= 6 || ethScore >= 5)) {
+            const parts = [];
+            if (btcScore >= 6) parts.push(`BTC ${btcChange.toFixed(2)}%`);
+            if (ethScore >= 5) parts.push(`ETH ${ethChange.toFixed(2)}%`);
+            addFeed('MARKETS', `Crypto risk-off ${parts.join(', ')} (24/7 sentiment)`, true, 'Alert');
+        }
         else if (!fromCache && (usScore + ilScore) >= 8) addFeed('MARKETS', `Equity risk-off: US ${usChange.toFixed(2)}%, IL ${ilChange.toFixed(2)}%`, true, 'Alert');
     } else {
         updateSignal('markets', 10, 'Waiting for data...');
@@ -1703,12 +1714,14 @@ function displayData(data, fromCache = false) {
             marketsStates: {
                 US: data?.markets?.data?.US?.status || null,
                 ISRAEL: data?.markets?.data?.ISRAEL?.status || null,
-                BITCOIN: data?.markets?.data?.BITCOIN?.status || null
+                BITCOIN: data?.markets?.data?.BITCOIN?.status || null,
+                ETHEREUM: data?.markets?.data?.ETHEREUM?.status || null
             },
             marketsChange: {
                 US: toFiniteNumber(data?.markets?.data?.US?.change_percent, NaN),
                 ISRAEL: toFiniteNumber(data?.markets?.data?.ISRAEL?.change_percent, NaN),
-                BITCOIN: toFiniteNumber(data?.markets?.data?.BITCOIN?.change_percent, NaN)
+                BITCOIN: toFiniteNumber(data?.markets?.data?.BITCOIN?.change_percent, NaN),
+                ETHEREUM: toFiniteNumber(data?.markets?.data?.ETHEREUM?.change_percent, NaN)
             },
             flightDetail,
             militaryDetail,
@@ -1728,11 +1741,17 @@ function displayData(data, fromCache = false) {
                     const us = curr.marketsStates.US ? `US ${curr.marketsStates.US}` : null;
                     const il = curr.marketsStates.ISRAEL ? `IL ${curr.marketsStates.ISRAEL}` : null;
                     const btc = curr.marketsStates.BITCOIN ? `BTC ${curr.marketsStates.BITCOIN}` : null;
+                    const eth = curr.marketsStates.ETHEREUM ? `ETH ${curr.marketsStates.ETHEREUM}` : null;
                     if (us) parts.push(us);
                     if (il) parts.push(il);
                     if (btc) parts.push(btc);
-                    const liveBtc = Number.isFinite(curr.marketsChange.BITCOIN) ? `, BTC ${curr.marketsChange.BITCOIN.toFixed(2)}%` : '';
-                    reasons.push(`Markets easing (${parts.join(', ')}${liveBtc})`);
+                    if (eth) parts.push(eth);
+                    const liveCrypto = [
+                        Number.isFinite(curr.marketsChange.BITCOIN) ? `BTC ${curr.marketsChange.BITCOIN.toFixed(2)}%` : null,
+                        Number.isFinite(curr.marketsChange.ETHEREUM) ? `ETH ${curr.marketsChange.ETHEREUM.toFixed(2)}%` : null
+                    ].filter(Boolean);
+                    const extra = liveCrypto.length ? `, ${liveCrypto.join(', ')}` : '';
+                    reasons.push(`Markets easing (${parts.join(', ')}${extra})`);
                 } else if (x.k === 'aviation') {
                     reasons.push(`Aviation normalizing (${flightDetail})`);
                 } else if (x.k === 'military') {

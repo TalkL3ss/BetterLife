@@ -24,10 +24,12 @@ NPOINT_ID = "fed9ee910656da13bf03" # Shared npoint ID
 # S&P 500: ^GSPC
 # Israel ETF (tracking TA-35): EIS
 # Bitcoin: BTC-USD
+# Ethereum: ETH-USD
 MARKET_TICKERS = {
     "US": "^GSPC",
     "ISRAEL": "EIS",
-    "BITCOIN": "BTC-USD"
+    "BITCOIN": "BTC-USD",
+    "ETHEREUM": "ETH-USD",
 }
 
 # -----------------------------------------------------------------------------
