@@ -670,39 +670,79 @@ def check_airspace_warnings():
     Uses public data sources or known status if direct API is unavailable.
     """
     print("Checking Airspace Warnings (NOTAMs)...")
-    
-    warnings = []
-    score = 0
-    
+
+    # NOTE: This module does not currently ingest live FIR NOTAM feeds.
+    # We still score the signal by a typed severity model so the UI/feed can
+    # explain "why" the number is what it is.
+
+    # Type-based scoring model (0..50 raw; frontend maps to max 15% contribution)
+    TYPE_SCORES = {
+        "FIR_PROHIBITED": 40,      # no-fly / prohibited / closed FIR
+        "FIR_RESTRICTED": 28,      # restricted airspace / route closure
+        "FIR_CAUTION": 10,         # caution advisory
+        "AERODROME_CLOSED": 20,    # airport closed (runway/aerodrome)
+        "SECURITY_WARNING": 12,    # security risk advisory (non-closure)
+        "UNKNOWN": 0,
+    }
+
+    def make_notam(fir, label, notam_type, severity, message):
+        return {
+            "fir": fir,
+            "label": label,
+            "type": notam_type,
+            "severity": severity,
+            "score": int(TYPE_SCORES.get(notam_type, 0)),
+            "message": message,
+        }
+
+    notams = []
+
     # Tehran (OIIX)
-    tehran_status = 2 # Currently Red/Danger
+    # 0=Normal, 1=Caution, 2=Restricted/Prohibited
+    tehran_status = 2
     if tehran_status == 2:
-        warnings.append(f"CRITICAL: {TEHRAN_FIR} (Tehran) is RESTRICTED/PROHIBITED.")
-        score += 40
+        notams.append(make_notam(TEHRAN_FIR, "Tehran FIR", "FIR_PROHIBITED", "CRITICAL", f"{TEHRAN_FIR} (Tehran) is RESTRICTED/PROHIBITED."))
     elif tehran_status == 1:
-        warnings.append(f"WARNING: {TEHRAN_FIR} (Tehran) has advisory warnings.")
-        score += 20
-        
+        notams.append(make_notam(TEHRAN_FIR, "Tehran FIR", "FIR_CAUTION", "WARNING", f"{TEHRAN_FIR} (Tehran) has advisory warnings."))
+
     # Tel Aviv (LLLL)
-    tel_aviv_status = 1 # Currently Yellow/Caution
+    tel_aviv_status = 1
     if tel_aviv_status == 2:
-        warnings.append(f"CRITICAL: {TEL_AVIV_FIR} (Tel Aviv) is CLOSED.")
-        score += 50 
+        notams.append(make_notam(TEL_AVIV_FIR, "Tel Aviv FIR", "FIR_PROHIBITED", "CRITICAL", f"{TEL_AVIV_FIR} (Tel Aviv) is CLOSED."))
     elif tel_aviv_status == 1:
-        warnings.append(f"NOTICE: {TEL_AVIV_FIR} (Tel Aviv) has caution advisories.")
-        score += 10
-        
-    print(f"  Airspace Score Contribution: {score}")
-    for w in warnings:
-        print(f"  - {w}")
-        
+        notams.append(make_notam(TEL_AVIV_FIR, "Tel Aviv FIR", "FIR_CAUTION", "NOTICE", f"{TEL_AVIV_FIR} (Tel Aviv) has caution advisories."))
+
+    raw_score = sum(int(n.get("score") or 0) for n in notams)
+    raw_score = max(0, min(50, raw_score))
+
+    details = []
+    for n in notams:
+        sev = (n.get("severity") or "").strip().upper() or "NOTICE"
+        typ = (n.get("type") or "UNKNOWN").strip().upper()
+        msg = (n.get("message") or "").strip()
+        details.append(f"{sev}: {msg} [type={typ}]")
+
+    status = "Restricted" if any(n.get("type") in ("FIR_PROHIBITED", "FIR_RESTRICTED") for n in notams) else ("Caution" if raw_score > 0 else "Normal")
+
+    print(f"  Airspace Score Contribution: {raw_score}")
+    for d in details:
+        print(f"  - {d}")
+
+    # Summarize by type for downstream explanations
+    type_counts = {}
+    for n in notams:
+        t = n.get("type") or "UNKNOWN"
+        type_counts[t] = int(type_counts.get(t, 0)) + 1
+
     return {
-        "score": score,
-        "details": warnings,
-        "status": "Restricted" if score > 30 else "Caution" if score > 0 else "Normal",
+        "score": int(raw_score),
+        "details": details,
+        "notams": notams,
+        "type_counts": type_counts,
+        "status": status,
         "fir_codes": [TEHRAN_FIR, TEL_AVIV_FIR],
         "source_url": "https://notams.aim.faa.gov/notamSearch/",
-        "timestamp": utc_iso()
+        "timestamp": utc_iso(),
     }
 
 # -----------------------------------------------------------------------------
