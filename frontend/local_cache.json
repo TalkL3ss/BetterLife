@@ -1,0 +1,104 @@
+{
+  "timestamp": 1769598969036,
+  "strikeraedar_updated_ms": 1769598969036,
+  "strikeraedar_updated": "2026-01-28T11:16:09.036916Z",
+  "news_intel": {
+    "articles": [],
+    "total_count": 0,
+    "alert_count": 0,
+    "timestamp": "2026-01-28T11:16:09.044962Z"
+  },
+  "news": 3.0,
+  "interest": 1.0,
+  "socialDetail": "Monitoring...",
+  "aviation": 5.0,
+  "flightDetail": "Awaiting data...",
+  "military": 1.0,
+  "militaryDetail": "Awaiting data...",
+  "weather": 1.0,
+  "weatherCondition": "Poor",
+  "weatherDetail": "Weather unavailable",
+  "weatherFetched": false,
+  "gps": 0.5,
+  "gpsDetail": "No spoofing/jamming reports detected",
+  "diplomats": 0.5,
+  "diplomatsDetail": "No diplomatic movement signals detected",
+  "maritime_ntm": {
+    "score": 0.0,
+    "count": 0,
+    "critical": 0,
+    "detail": "Awaiting data...",
+    "samples": [],
+    "timestamp": "2026-01-28T11:16:09.050212Z"
+  },
+  "airspace": {
+    "score": 50,
+    "details": [
+      "CRITICAL: OIIX (Tehran) is RESTRICTED/PROHIBITED.",
+      "NOTICE: LLLL (Tel Aviv) has caution advisories."
+    ],
+    "status": "Restricted",
+    "timestamp": "2026-01-28T11:16:09.050224Z"
+  },
+  "markets": {
+    "score": 0,
+    "status": "Unknown",
+    "details": [
+      "Missing yfinance lib"
+    ],
+    "data": {}
+  },
+  "pentagon": {
+    "score": 50,
+    "status": "Lunch Rush",
+    "timestamp": "2026-01-28T11:16:09.050235Z",
+    "is_late_night": false,
+    "is_weekend": false
+  },
+  "risk_now": 30.0,
+  "risk_projected_8h": 32.0,
+  "history": [
+    {
+      "timestamp": 1769598969036,
+      "risk": 32.0
+    }
+  ],
+  "signalHistory": {
+    "news": [
+      10
+    ],
+    "social": [
+      5
+    ],
+    "flight": [
+      33
+    ],
+    "maritime": [
+      0
+    ],
+    "military": [
+      7
+    ],
+    "markets": [
+      0
+    ],
+    "polymarket": [
+      0
+    ],
+    "airspace": [
+      100
+    ],
+    "weather": [
+      20
+    ],
+    "gps": [
+      6
+    ],
+    "diplomats": [
+      4
+    ],
+    "pentagon": [
+      50
+    ]
+  }
+}

@@ -25,6 +25,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Stamp build id (cache-bust)
+        run: |
+          BUILD_ID="${GITHUB_SHA::7}-${GITHUB_RUN_NUMBER}"
+          sed -i "s/__BUILD_ID__/${BUILD_ID}/g" frontend/index.html
+
       - name: Setup Pages
         uses: actions/configure-pages@v4
 

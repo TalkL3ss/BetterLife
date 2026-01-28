@@ -17,6 +17,11 @@ const TELEGRAM_CHANNEL = '@BetterLifeAlerts';
 // JSONbin configuration
 const CACHE_DURATION = 30 * 60 * 1000; // 30 minutes
 
+const URL_PARAMS = new URLSearchParams(window.location.search);
+// Safety: never let random clients overwrite the shared cache unless explicitly enabled.
+const ALLOW_SHARED_CACHE_WRITE = URL_PARAMS.has('write');
+const ALLOW_TELEGRAM_ALERTS = URL_PARAMS.has('alerts');
+
 // Analytics helper (safe no-op if GA/gtag isn't available)
 function trackEvent(action, category = 'engagement', label = null, value = null, extra = null) {
     try {
@@ -36,6 +41,8 @@ const state = {
     trendData: [],
     trendLabels: [],
     sourceLists: {},
+    cacheSeedMs: null,
+    lastCacheSeenMs: 0,
     // Cache last known values for when APIs fail
     lastKnown: {
         aviation: { value: 5, detail: 'Cached data' }
@@ -384,6 +391,7 @@ function updatePyLastUpdate(data) {
     if (!el) return;
 
     const candidates = [
+        data?.strikeraedar_updated_ms,
         data?.airspace?.timestamp,
         data?.markets?.timestamp,
         data?.pentagon?.timestamp,
@@ -410,9 +418,9 @@ function updatePyLastUpdate(data) {
         return;
     }
 
-    const hh = best.getHours().toString().padStart(2, '0');
-    const mm = best.getMinutes().toString().padStart(2, '0');
-    el.textContent = `${hh}:${mm}`;
+    const hh = best.getUTCHours().toString().padStart(2, '0');
+    const mm = best.getUTCMinutes().toString().padStart(2, '0');
+    el.textContent = `${hh}:${mm} UTC`;
 }
 
 function safeExternalUrl(url) {
@@ -613,7 +621,7 @@ function startCountdown() {
 function updateGauge(score) {
     score = Math.max(0, Math.min(100, Math.round(score)));
     // Deterministic jitter for gauge - all users see same value
-    const seed = Math.floor(Date.now() / (30 * 60 * 1000));
+    const seed = getTimeBasedSeed();
     const jitterVal = Math.floor(seededRandom(seed, 99) * 3) - 1;
     const displayScore = Math.max(0, Math.min(100, score + jitterVal));
     state.risk = displayScore;
@@ -646,7 +654,7 @@ function updateSignal(name, value, detail) {
     } else {
         // Deterministic jitter for signal display - all users see same
         let displayValue = Math.round(value) || 0;
-        const seed = Math.floor(Date.now() / (30 * 60 * 1000));
+        const seed = getTimeBasedSeed();
         const signalIndex = { news: 10, social: 11, flight: 12 }[name] || 13;
         const jitterVal = Math.floor(seededRandom(seed, signalIndex) * 5) - 2;
         displayValue = Math.max(0, Math.min(100, displayValue + jitterVal));
@@ -916,7 +924,8 @@ async function fetchNews() {
         let newsArticles = [];
 
         try {
-            const cacheRes = await fetch(`https://api.npoint.io/${API_KEYS.npoint}`);
+            const cb = Math.floor(Date.now() / 60000);
+            const cacheRes = await fetch(`https://api.npoint.io/${API_KEYS.npoint}?cb=${cb}`, { cache: 'no-store' });
             if (cacheRes.ok) {
                 const cache = await cacheRes.json();
                 if (cache.news_intel && cache.news_intel.articles) {
@@ -1286,8 +1295,8 @@ async function fetchPolymarket() {
 // Changes every 30 minutes when data refreshes
 function getTimeBasedSeed() {
     // Round to nearest 30-minute window
-    const now = Date.now();
-    return Math.floor(now / (30 * 60 * 1000));
+    const base = toFiniteNumber(state.cacheSeedMs, Date.now());
+    return Math.floor(base / (30 * 60 * 1000));
 }
 
 // Simple seeded random (deterministic based on seed + index)
@@ -1310,7 +1319,8 @@ const NPOINT_ID = API_KEYS.npoint;
 
 async function getCache() {
     try {
-        const res = await fetch(`https://api.npoint.io/${NPOINT_ID}`);
+        const cb = Math.floor(Date.now() / 60000); // 1-minute bucket
+        const res = await fetch(`https://api.npoint.io/${NPOINT_ID}?cb=${cb}`, { cache: 'no-store' });
         if (res.ok) {
             return await res.json();
         }
@@ -1322,6 +1332,8 @@ async function getCache() {
 
 async function setCache(data, totalRisk = null) {
     try {
+        if (!ALLOW_SHARED_CACHE_WRITE) return;
+
         // Get existing cache to preserve history AND GitHub Action data
         const existing = await getCache();
         let history = (existing && existing.history) ? existing.history : [];
@@ -1404,7 +1416,8 @@ async function fetchFreshData() {
     // First, get cached data for polymarket and pentagon (set by GitHub Action)
     let cachedData = {};
     try {
-        const cacheRes = await fetch(`https://api.npoint.io/${API_KEYS.npoint}`);
+        const cb = Math.floor(Date.now() / 60000);
+        const cacheRes = await fetch(`https://api.npoint.io/${API_KEYS.npoint}?cb=${cb}`, { cache: 'no-store' });
         if (cacheRes.ok) {
             cachedData = await cacheRes.json();
         }
@@ -1521,6 +1534,8 @@ async function fetchFreshData() {
 
 // Display data on the dashboard
 function displayData(data, fromCache = false) {
+    state.cacheSeedMs = toFiniteNumber(data?.strikeraedar_updated_ms, toFiniteNumber(data?.timestamp, toFiniteNumber(state.cacheSeedMs, Date.now())));
+
     // Defensive parsing: cache can be partially populated (or overwritten) and must not produce NaN UI.
     let safeNews = applyJitter(toFiniteNumber(data.news, 3), 0, 30, 1, 1);
     let safeInterest = applyJitter(toFiniteNumber(data.interest, 5), 0, 20, 1, 2);
@@ -1616,7 +1631,7 @@ function displayData(data, fromCache = false) {
     const safeMilitary = applyJitter(toFiniteNumber(data.military, 1), 0, 15, 1, 7);
     const militaryDetail = (data.militaryDetail && !data.militaryDetail.includes('Awaiting') && !data.militaryDetail.includes('Loading')) ? data.militaryDetail : 'Monitoring...';
     updateSignal('military', Math.round((safeMilitary / 15) * 100), militaryDetail);
-    setStatus('militaryStatus', !fromCache);
+    setStatus('militaryStatus', data?.military !== undefined || !!data?.militaryDetail);
     setIocFromScore('military', Math.round((safeMilitary / 15) * 100), 45, 70);
 
     // WEATHER (client-side)
@@ -1720,27 +1735,18 @@ function displayData(data, fromCache = false) {
     let polymarketContribution = 1; // baseline
     if (data.polymarket && data.polymarket.odds !== undefined) {
         // Safety: odds should be 0-100, cap at 100
-        polymarketOdds = Math.min(100, Math.max(0, data.polymarket.odds));
-
-        // Sanity check: if odds > 95, something is probably wrong with parsing
-        if (polymarketOdds > 95) {
-            console.warn('Polymarket odds suspiciously high:', data.polymarket);
-            polymarketOdds = 0; // Reset to 0 if data seems wrong
-        }
+        polymarketOdds = Math.min(100, Math.max(0, toFiniteNumber(data.polymarket.odds, 0)));
 
         polymarketContribution = Math.min(10, polymarketOdds * 0.1);
         const marketTitle = data.polymarket.market || 'Iran strike';
 
-        if (polymarketOdds > 0) {
-            updateSignal('polymarket', polymarketOdds, `${polymarketOdds}% odds`);
-            setStatus('polymarketStatus', true);
-        } else {
-            updateSignal('polymarket', 10, 'Data error - refreshing...');
-            setStatus('polymarketStatus', true);
-        }
+        updateSignal('polymarket', polymarketOdds, `${polymarketOdds}% odds`);
+        setStatus('polymarketStatus', true);
 
-        if (polymarketOdds > 30 && polymarketOdds <= 95) {
-            addFeed('MARKET', `📊 Polymarket: ${polymarketOdds}% odds on "${marketTitle.substring(0, 40)}"`, true, 'Alert');
+        if (!fromCache && polymarketOdds >= 0) {
+            const url = safeExternalUrl(data?.polymarket?.url) || safeExternalUrl(data?.polymarket?.market_url);
+            const isAlert = polymarketOdds > 30;
+            addFeed('MARKET', `📊 Polymarket: ${polymarketOdds}% odds on "${marketTitle.substring(0, 48)}"`, isAlert, isAlert ? 'Alert' : null, null, url);
         }
     } else {
         // No cached polymarket data yet - show baseline
@@ -1760,14 +1766,24 @@ function displayData(data, fromCache = false) {
         const displayRisk = Math.min(100, Math.round(score * 2));
         const status = data.airspace.status || 'Normal';
 
-        updateSignal('airspace', displayRisk, status);
+        const details = Array.isArray(data.airspace.details) ? data.airspace.details : [];
+        const normalized = details.map(d => String(d || '')
+            .replace(/^CRITICAL:\s*/i, '')
+            .replace(/^WARNING:\s*/i, '')
+            .replace(/^NOTICE:\s*/i, '')
+            .trim()).filter(Boolean);
+        const where = normalized.length ? normalized.join(' • ') : status;
+        updateSignal('airspace', displayRisk, where);
         setStatus('airspaceStatus', true);
         if (score >= 40) setIocLevel('airspace', 'high');
         else if (score >= 20) setIocLevel('airspace', 'med');
         else setIocLevel('airspace', null);
 
-        if (score >= 40) {
-            addFeed('AIRSPACE', '🚫 Critical airspace closure detected', true, 'Alert');
+        if (!fromCache && score > 0) {
+            const url = data?.airspace?.source_url || SOURCE_URLS.airspace;
+            const firs = Array.isArray(data?.airspace?.fir_codes) ? data.airspace.fir_codes.join(', ') : 'OIIX, LLLL';
+            const summary = `NOTAMs (${firs}): ${where}`;
+            addFeed('AIRSPACE', summary, score >= 40, 'NOTAM', null, url);
         }
     } else {
         updateSignal('airspace', 5, 'Monitoring...');
@@ -1910,7 +1926,9 @@ function displayData(data, fromCache = false) {
     if (maritimeContribution >= 9 || maritimeCritical >= 1) iocScore += 2;
     else if (maritimeContribution >= 5 || maritimeCount >= 1) iocScore += 1;
 
-    const projectedTotal = projectRiskNext8Hours(total, data?.history || [], iocScore);
+    let projectedTotal = projectRiskNext8Hours(total, data?.history || [], iocScore);
+    const serverProjected = toFiniteNumber(data?.risk_projected_8h, NaN);
+    if (Number.isFinite(serverProjected)) projectedTotal = Math.round(Math.max(0, Math.min(100, serverProjected)));
 
     const prevRisk = state.risk;
     updateGauge(projectedTotal);
@@ -2114,7 +2132,7 @@ function displayData(data, fromCache = false) {
     updateTimestamp(data.timestamp);
 
     // Send Telegram alert if risk crossed 60% threshold
-    if (!fromCache) {
+    if (!fromCache && ALLOW_TELEGRAM_ALERTS) {
         sendTelegramAlert(projectedTotal, prevRisk);
     }
 
@@ -2212,84 +2230,41 @@ const MIN_API_INTERVAL = 15 * 60 * 1000; // Minimum 15 minutes between API calls
 
 // MASTER CALCULATION - checks cache first, only calls APIs if cache is old
 async function calculate() {
-    const now = Date.now();
-
-    // Try JSONbin cache first
+    // Read-only mode: always render from the shared cache for consistent values across users.
     let cached = await getCache();
 
-    // If JSONbin failed, try localStorage backup
     if (!cached) {
         try {
             const local = localStorage.getItem('betterlife_cache');
-            if (local) {
-                cached = JSON.parse(local);
-                console.log('Using localStorage backup cache');
-            }
+            if (local) cached = JSON.parse(local);
         } catch (e) { }
     }
 
-    // If cache exists and is less than 30 minutes old, use it
-    if (cached && cached.timestamp && (now - cached.timestamp) < CACHE_DURATION) {
-        console.log('Using cached data (age: ' + Math.round((now - cached.timestamp) / 60000) + ' min)');
-        const total = displayData(cached, true);
+    if (cached) {
+        state.cacheSeedMs = toFiniteNumber(cached?.strikeraedar_updated_ms, toFiniteNumber(cached?.timestamp, Date.now()));
+        const cacheMs = toFiniteNumber(cached?.strikeraedar_updated_ms, toFiniteNumber(cached?.timestamp, 0));
+        const isNewData = cacheMs && cacheMs !== state.lastCacheSeenMs;
+        if (cacheMs) state.lastCacheSeenMs = cacheMs;
+
+        const total = displayData(cached, !isNewData);
         updateChartFromHistory(cached.history);
-        return;
+        try {
+            localStorage.setItem('betterlife_cache', JSON.stringify(cached));
+        } catch (e) { }
+        return total;
     }
 
-    // If cache exists but is old (30-60 min), still use it but don't call APIs
-    // This prevents excessive API calls - only refresh every 60 min max
-    if (cached && cached.timestamp && (now - cached.timestamp) < 60 * 60 * 1000) {
-        console.log('Using slightly stale cache to preserve API quota (age: ' + Math.round((now - cached.timestamp) / 60000) + ' min)');
-        const total = displayData(cached, true);
-        updateChartFromHistory(cached.history);
-        return;
-    }
-
-    // SAFETY CHECK: Don't call APIs more than once per hour per browser
-    const lastCall = localStorage.getItem('betterlife_last_api_call');
-    if (lastCall && (now - parseInt(lastCall)) < MIN_API_INTERVAL) {
-        console.log('API rate limit protection - using stale cache or defaults');
-        if (cached) {
-            const total = displayData(cached, true);
-            updateChartFromHistory(cached.history);
-        } else {
-            // Show default values if no cache at all
-            updateSignal('news', 10, 'Waiting for data...');
-            updateSignal('social', 8, 'Waiting for data...');
-            updateSignal('flight', 12, 'Waiting for data...');
-            updateSignal('military', 10, 'Waiting for data...');
-            updateSignal('weather', 'Marginal', 'Waiting for data...');
-            updateSignal('gps', 5, 'Waiting for data...');
-            updateSignal('diplomats', 5, 'Waiting for data...');
-            updateSignal('markets', 10, 'Waiting for data...');
-            updateSignal('airspace', 5, 'Waiting for data...');
-            updateGauge(15);
-        }
-        return;
-    }
-
-    // Cache is very old or doesn't exist - fetch fresh data
-    console.log('Fetching fresh data...');
-
-    // Mark API call time BEFORE calling (prevents race conditions)
-    localStorage.setItem('betterlife_last_api_call', now.toString());
-
-    const freshData = await fetchFreshData();
-
-    // Display the fresh data and get total risk
-    const total = displayData(freshData, false);
-
-    // Save to cache with history point
-    await setCache(freshData, total);
-
-    // Also save to localStorage as backup
-    try {
-        localStorage.setItem('betterlife_cache', JSON.stringify(freshData));
-    } catch (e) { }
-
-    // Update chart from history (will include the new point)
-    const updatedCache = await getCache();
-    updateChartFromHistory(updatedCache?.history);
+    // No cache at all
+    updateSignal('news', 10, 'Awaiting data...');
+    updateSignal('social', 8, 'Awaiting data...');
+    updateSignal('flight', 12, 'Awaiting data...');
+    updateSignal('military', 10, 'Awaiting data...');
+    updateSignal('weather', 'Marginal', 'Awaiting data...');
+    updateSignal('gps', 5, 'Awaiting data...');
+    updateSignal('diplomats', 5, 'Awaiting data...');
+    updateSignal('markets', 10, 'Awaiting data...');
+    updateSignal('airspace', 5, 'Awaiting data...');
+    updateGauge(15);
 }
 
 // Update chart with real history data (fills gaps with simulated data)
@@ -2424,28 +2399,9 @@ document.addEventListener('keydown', (e) => {
 });
 
 async function forceRefresh() {
-    // Check rate limit - only allow once per hour
-    const now = Date.now();
-    const lastCall = localStorage.getItem('betterlife_last_api_call');
-    if (lastCall && (now - parseInt(lastCall)) < MIN_API_INTERVAL) {
-        showToast('⏳ Please wait - API refresh limited to every 15 min');
-        return;
-    }
-
-    showToast('🔄 Refreshing data...');
-    localStorage.setItem('betterlife_last_api_call', now.toString());
-
-    const freshData = await fetchFreshData();
-    const total = displayData(freshData, false);
-    await setCache(freshData, total);
-
-    try {
-        localStorage.setItem('betterlife_cache', JSON.stringify(freshData));
-    } catch (e) { }
-
-    const updatedCache = await getCache();
-    updateChartFromHistory(updatedCache?.history);
-    showToast('✅ Data refreshed!');
+    showToast('🔄 Refreshing from cache...');
+    await calculate();
+    showToast('✅ Updated');
 }
 
 function showToast(message) {
