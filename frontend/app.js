@@ -386,6 +386,9 @@ function updatePyLastUpdate(data) {
         data?.airspace?.timestamp,
         data?.markets?.timestamp,
         data?.pentagon?.timestamp,
+        data?.pentagon_updated,
+        data?.strikeraedar_updated,
+        data?.timestamp,
     ];
 
     let best = null;
@@ -409,6 +412,72 @@ function updatePyLastUpdate(data) {
     const hh = best.getHours().toString().padStart(2, '0');
     const mm = best.getMinutes().toString().padStart(2, '0');
     el.textContent = `${hh}:${mm}`;
+}
+
+function safeExternalUrl(url) {
+    if (!url || typeof url !== 'string') return null;
+    const trimmed = url.trim();
+    if (!/^https?:\/\//i.test(trimmed)) return null;
+    return trimmed;
+}
+
+function getFirstArticleUrl(articles) {
+    if (!Array.isArray(articles)) return null;
+    for (const a of articles) {
+        const u = safeExternalUrl(a?.url) || safeExternalUrl(a?.link) || safeExternalUrl(a?.source_url);
+        if (u) return u;
+    }
+    return null;
+}
+
+const SOURCE_URLS = {
+    news: null, // dynamic (article) fallback is set in updateSourceLinks
+    trends: 'https://www.gdeltproject.org/',
+    aviation: 'https://opensky-network.org/',
+    maritime: 'https://www.ukmto.org/',
+    military: 'https://opensky-network.org/',
+    markets: 'https://finance.yahoo.com/',
+    pentagon: 'https://en.wikipedia.org/wiki/Pentagon_Pizza_Index',
+    polymarket: 'https://polymarket.com/',
+    airspace: 'https://notams.aim.faa.gov/notamSearch/',
+    weather: 'https://openweathermap.org/api',
+    gps: null, // dynamic (article) fallback is set in updateSourceLinks
+    diplomats: null // dynamic (article) fallback is set in updateSourceLinks
+};
+
+function setSourceLink(id, url) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const safe = safeExternalUrl(url);
+    if (!safe) {
+        el.setAttribute('href', '#');
+        el.classList.add('disabled');
+        return;
+    }
+    el.classList.remove('disabled');
+    el.setAttribute('href', safe);
+}
+
+function updateSourceLinks(data) {
+    const articles = data?.news_intel?.articles;
+    const firstArticle = getFirstArticleUrl(articles);
+
+    const polymarketUrl = safeExternalUrl(data?.polymarket?.url) ||
+        safeExternalUrl(data?.polymarket?.market_url) ||
+        SOURCE_URLS.polymarket;
+
+    setSourceLink('newsSource', firstArticle || 'https://www.bbc.com/news');
+    setSourceLink('trendsSource', SOURCE_URLS.trends);
+    setSourceLink('flightSource', SOURCE_URLS.aviation);
+    setSourceLink('maritimeSource', firstArticle || SOURCE_URLS.maritime);
+    setSourceLink('militarySource', SOURCE_URLS.military);
+    setSourceLink('weatherSource', SOURCE_URLS.weather);
+    setSourceLink('marketsSource', SOURCE_URLS.markets);
+    setSourceLink('pentagonSource', SOURCE_URLS.pentagon);
+    setSourceLink('polymarketSource', polymarketUrl);
+    setSourceLink('airspaceSource', SOURCE_URLS.airspace);
+    setSourceLink('gpsSource', firstArticle || 'https://www.gdeltproject.org/');
+    setSourceLink('diplomatsSource', firstArticle || 'https://www.state.gov/');
 }
 
 function startCountdown() {
@@ -494,15 +563,24 @@ function setIocFromScore(signalName, score, med = 50, high = 70) {
     else setIocLevel(signalName, null);
 }
 
-function addFeed(source, text, isAlert = false, badge = null, tone = null) {
+function addFeed(source, text, isAlert = false, badge = null, tone = null, url = null) {
     const key = text.substring(0, 50).toLowerCase();
     if (state.seenHeadlines.has(key)) return;
     state.seenHeadlines.add(key);
 
-    const item = { source, text, isAlert, badge, tone, time: formatTime() };
+    const item = { source, text, isAlert, badge, tone, url: safeExternalUrl(url), time: formatTime() };
     state.feedItems.unshift(item);
     if (state.feedItems.length > 20) state.feedItems.pop();
     renderFeed();
+}
+
+function escapeHtml(s) {
+    return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/\"/g, '&quot;')
+        .replace(/'/g, '&#39;');
 }
 
 function renderFeed() {
@@ -514,10 +592,13 @@ function renderFeed() {
     list.innerHTML = items.map(i => `
         <div class="feed-item${i.isAlert ? ' alert' : ''}${i.tone === 'positive' ? ' positive' : ''}">
             <div class="feed-meta">
-                <span class="feed-source">${i.source}${i.badge ? ` <span class="feed-badge">${i.badge}</span>` : ''}</span>
+                <span class="feed-source-wrap">
+                    <span class="feed-source">${escapeHtml(i.source)}${i.badge ? ` <span class="feed-badge">${escapeHtml(i.badge)}</span>` : ''}</span>
+                    ${i.url ? `<a class="feed-link" href="${escapeHtml(i.url)}" target="_blank" rel="noopener noreferrer">Source ↗</a>` : ''}
+                </span>
                 <span class="feed-time">${i.time}</span>
             </div>
-            <div class="feed-text">${i.text}</div>
+            <div class="feed-text">${escapeHtml(i.text)}</div>
         </div>
     `).join('');
 
@@ -1641,6 +1722,7 @@ function displayData(data, fromCache = false) {
 
     // Show last server-side (.py) update time if available
     updatePyLastUpdate(data);
+    updateSourceLinks(data);
 
     // Base score (acts as "now" score) from signals
     let total = safeNews + safeInterest + safeAviation + maritimeContribution + safeMilitary + marketsContribution + safePolymarketCalc + airspaceContribution + pentagonContribution + safeWeather + gpsContribution + diplomatsContribution;
@@ -1690,6 +1772,91 @@ function displayData(data, fromCache = false) {
 
     const prevRisk = state.risk;
     updateGauge(projectedTotal);
+
+    // Emit per-signal score deltas into the Intelligence Feed (with source links when possible)
+    if (!fromCache && state.lastSignalSnapshot && state.lastSignalSnapshot.contributions) {
+        const prevC = state.lastSignalSnapshot.contributions;
+        const currC = {
+            news: safeNews,
+            interest: safeInterest,
+            aviation: safeAviation,
+            maritime: maritimeContribution,
+            military: safeMilitary,
+            markets: marketsContribution,
+            polymarket: safePolymarketCalc,
+            airspace: airspaceContribution,
+            pentagon: pentagonContribution,
+            weather: safeWeather,
+            gps: gpsContribution,
+            diplomats: diplomatsContribution
+        };
+
+        const labels = {
+            news: 'News Intel',
+            interest: 'Public Interest',
+            aviation: 'Civil Aviation',
+            maritime: 'Maritime NtM (Hormuz)',
+            military: 'Military Trackers',
+            markets: 'Stock Markets',
+            polymarket: 'Market Odds',
+            airspace: 'Airspace NOTAMs',
+            pentagon: 'Pentagon Pizza Meter',
+            weather: 'Op. Conditions',
+            gps: 'GPS/GNSS Interference',
+            diplomats: 'Diplomatic Posture'
+        };
+
+        const firstArticle = getFirstArticleUrl(data?.news_intel?.articles);
+        const polymarketUrl = safeExternalUrl(data?.polymarket?.url) || safeExternalUrl(data?.polymarket?.market_url) || SOURCE_URLS.polymarket;
+        const urls = {
+            news: firstArticle || 'https://www.bbc.com/news',
+            interest: SOURCE_URLS.trends,
+            aviation: SOURCE_URLS.aviation,
+            maritime: firstArticle || SOURCE_URLS.maritime,
+            military: SOURCE_URLS.military,
+            markets: SOURCE_URLS.markets,
+            polymarket: polymarketUrl,
+            airspace: SOURCE_URLS.airspace,
+            pentagon: SOURCE_URLS.pentagon,
+            weather: SOURCE_URLS.weather,
+            gps: firstArticle || SOURCE_URLS.trends,
+            diplomats: firstArticle || 'https://www.state.gov/'
+        };
+
+        const details = {
+            news: document.getElementById('newsDetail')?.textContent || '',
+            interest: document.getElementById('socialDetail')?.textContent || '',
+            aviation: document.getElementById('flightDetail')?.textContent || '',
+            maritime: document.getElementById('maritimeDetail')?.textContent || '',
+            military: document.getElementById('militaryDetail')?.textContent || '',
+            markets: document.getElementById('marketsDetail')?.textContent || '',
+            polymarket: document.getElementById('polymarketDetail')?.textContent || '',
+            airspace: document.getElementById('airspaceDetail')?.textContent || '',
+            pentagon: document.getElementById('pentagonDetail')?.textContent || '',
+            weather: document.getElementById('weatherDetail')?.textContent || '',
+            gps: document.getElementById('gpsDetail')?.textContent || '',
+            diplomats: document.getElementById('diplomatsDetail')?.textContent || ''
+        };
+
+        const changes = Object.entries(currC)
+            .map(([k, v]) => {
+                const dv = toFiniteNumber(v, 0) - toFiniteNumber(prevC[k], 0);
+                return { k, dv, v: toFiniteNumber(v, 0) };
+            })
+            .filter(x => Math.abs(x.dv) >= 1.5)
+            .sort((a, b) => Math.abs(b.dv) - Math.abs(a.dv))
+            .slice(0, 6);
+
+        for (const c of changes) {
+            const sign = c.dv > 0 ? '+' : '-';
+            const deltaPts = Math.round(Math.abs(c.dv));
+            const badge = `Score ${sign}${deltaPts}`;
+            const tone = c.dv < 0 ? 'positive' : null;
+            const isAlert = c.dv >= 3;
+            const detail = details[c.k] ? ` (${details[c.k]})` : '';
+            addFeed('SCORE', `${labels[c.k]} ${sign}${deltaPts}${detail}`, isAlert, badge, tone, urls[c.k]);
+        }
+    }
 
     // Explain de-escalation in the Intelligence Feed (green) with country context when possible
     const nowTs = Date.now();
