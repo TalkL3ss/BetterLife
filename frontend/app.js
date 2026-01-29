@@ -50,10 +50,12 @@ const state = {
     sourceLists: {},
     cacheSeedMs: null,
     lastCacheSeenMs: 0,
+    serverNextUpdateMs: 0,
     usingLocalCache: false,
     // Cache last known values for when APIs fail
     lastKnown: {
-        aviation: { value: 5, detail: 'Cached data' }
+        aviation: { value: 5, detail: 'Cached data' },
+        polymarket: { odds: null, market: null, url: null }
     },
     // Signal history for sparklines (20 data points each)
     signalHistory: {
@@ -122,16 +124,22 @@ function generateSparkline(data, color = '#22c55e') {
 }
 
 // Update sparkline for a signal
-function updateSparkline(name, value, color) {
+function updateSparkline(name, value, color, options = {}) {
     const container = document.getElementById(`${name}Sparkline`);
     if (!container) return;
+
+    const { append = true, neutralValue = 50 } = options || {};
 
     // Get history or generate mimicked data
     let history = state.signalHistory[name] || [];
 
+    const numericValue = (typeof value === 'number') ? value : Number(value);
+
     // Add current value if different from last
-    if (history.length === 0 || history[history.length - 1] !== value) {
-        history.push(value);
+    if (append && Number.isFinite(numericValue)) {
+        if (history.length === 0 || history[history.length - 1] !== numericValue) {
+            history.push(numericValue);
+        }
     }
 
     // Keep only last 20 points
@@ -141,13 +149,17 @@ function updateSparkline(name, value, color) {
 
     state.signalHistory[name] = history;
 
-    // If we don't have enough data yet, generate mimicked historical data
-    if (history.length < 5) {
-        const mimickedData = generateMimickedHistory(value, 20, name);
-        container.innerHTML = generateSparkline(mimickedData, color);
-    } else {
-        container.innerHTML = generateSparkline(history, color);
-    }
+    // If we don't have enough data yet, generate mimicked historical data.
+    // For stale/unavailable values we keep the previous trend shape, and if there isn't one, use a neutral midline.
+    const baseValue = (append && Number.isFinite(numericValue))
+        ? numericValue
+        : (history.length ? history[history.length - 1] : neutralValue);
+
+    const renderData = (history.length >= 5)
+        ? history
+        : generateMimickedHistory(baseValue, 20, name);
+
+    container.innerHTML = generateSparkline(renderData, color);
 }
 
 // Generate mimicked historical data based on current value
@@ -281,7 +293,7 @@ const INFO_CONTENT = {
     },
     aviation: {
         title: 'Civil Aviation',
-        body: '<strong>Source:</strong> OpenSky Network (ADS-B)<br><br><strong>What it tracks:</strong> Real-time commercial aircraft flying over Iran airspace.<br><br><strong>Baseline:</strong> Normal traffic shows 20-50+ aircraft over Iran at any time.<br><br><strong>Risk logic:</strong> A sudden DROP in aircraft count may indicate airlines avoiding the area = potential risk indicator.<br>• 30+ aircraft = Normal (low risk)<br>• 15-30 = Slightly reduced<br>• 5-15 = Below normal (elevated)<br>• <5 = Very low (high risk)<br><br><strong>Note:</strong> This is one signal among many. Traffic changes can have many causes.<br><br><strong>Max contribution:</strong> 15%'
+        body: '<strong>Sources:</strong> OpenSky Network (data) · <a href="https://www.flightradar24.com/32.42,53.68" target="_blank" rel="noopener noreferrer">FlightRadar24 (Iran map)</a><br><br><strong>What it tracks:</strong> Real-time commercial aircraft flying over Iran airspace.<br><br><strong>Baseline:</strong> Normal traffic shows 20-50+ aircraft over Iran at any time.<br><br><strong>Risk logic:</strong> A sudden DROP in aircraft count may indicate airlines avoiding the area = potential risk indicator.<br>• 30+ aircraft = Normal (low risk)<br>• 15-30 = Slightly reduced<br>• 5-15 = Below normal (elevated)<br>• <5 = Very low (high risk)<br><br><strong>Note:</strong> This is one signal among many. Traffic changes can have many causes.<br><br><strong>Max contribution:</strong> 15%'
     },
     markets: {
         title: 'Stock Markets',
@@ -289,7 +301,7 @@ const INFO_CONTENT = {
     },
     airspace: {
         title: 'Airspace NOTAMs',
-        body: '<strong>Source:</strong> FAA / Eurocontrol NOTAMs<br><br><strong>What it tracks:</strong> Official "Notice to Airmen" warnings for Tehran (OIIX) and Tel Aviv (LLLL) Flight Information Regions.<br><br><strong>Risk logic:</strong><br>• Normal/Caution = Low Risk<br>• Restricted/Prohibited = High Risk<br><br><strong>Max contribution:</strong> 15%'
+        body: '<strong>Sources:</strong> FAA NOTAM Search (manual) + heuristic severity model<br><br><strong>Manual search:</strong> <a href="https://notams.aim.faa.gov/notamSearch/nsapp.html#/" target="_blank" rel="noopener noreferrer">notams.aim.faa.gov/notamSearch</a><br><br><strong>What it tracks:</strong> Official "Notice to Airmen" context for Tehran (OIIX) and Tel Aviv (LLLL).<br><br><strong>Risk logic:</strong><br>• Normal/Caution = Low Risk<br>• Restricted/Prohibited = High Risk<br><br><strong>Max contribution:</strong> 15%'
     },
     military: {
         title: 'Military Trackers',
@@ -297,7 +309,15 @@ const INFO_CONTENT = {
     },
     polymarket: {
         title: 'Market Odds (Polymarket)',
-        body: '<strong>Source:</strong> Polymarket Gamma API<br><br><strong>What it tracks:</strong> Prediction market odds for "US strikes Iran" events. Real money betting markets often predict events accurately.<br><br><strong>Risk logic:</strong> Direct % from market odds. If traders bet 30% chance of strike, signal shows 30%.<br><br><strong>Max contribution:</strong> 10%'
+        body: '<strong>Source:</strong> Polymarket (best-match market via Gamma API)<br><br>' +
+            '<strong>Manual search:</strong> ' +
+            '<a href="https://polymarket.com/search?_q=iran" target="_blank" rel="noopener noreferrer">iran</a> · ' +
+            '<a href="https://polymarket.com/search?_q=tehran" target="_blank" rel="noopener noreferrer">tehran</a> · ' +
+            '<a href="https://polymarket.com/search?_q=hormuz" target="_blank" rel="noopener noreferrer">hormuz</a> · ' +
+            '<a href="https://polymarket.com/search?_q=iran%20strike" target="_blank" rel="noopener noreferrer">iran strike</a> · ' +
+            '<a href="https://polymarket.com/search?_q=iran%20attack" target="_blank" rel="noopener noreferrer">iran attack</a> · ' +
+            '<a href="https://polymarket.com/search?_q=strait%20of%20hormuz" target="_blank" rel="noopener noreferrer">strait of hormuz</a>' +
+            '<br><br><strong>What it tracks:</strong> Prediction market odds for Iran-related escalation events. Real-money markets sometimes move early (but can be wrong).<br><br><strong>Risk logic:</strong> Direct % from market odds. If traders price 30% chance, the signal shows 30%.<br><br><strong>Max contribution:</strong> 10%'
     },
     weather: {
         title: 'Operational Conditions (Weather)',
@@ -333,11 +353,39 @@ let chart;
 let lastUpdateTime = null;
 let countdownInterval = null;
 let maxRiskSeen = 0;
+let localClockInterval = null;
+const SERVER_UPDATE_INTERVAL_MS = 30 * 60 * 1000; // .py schedule
+
+// Auto-refresh: align refresh attempts to the GitHub Actions cron (*/30) and then poll
+// until the new cache timestamp is observed (accounts for workflow runtime).
+const CRON_SYNC_GRACE_MS = 60 * 1000; // start checking ~1 minute after cron start
+const CRON_SYNC_POLL_INTERVAL_MS = 30 * 1000;
+const CRON_SYNC_MAX_POLL_MS = 12 * 60 * 1000;
+
+let cronSyncTimeout = null;
+let cronSyncPollInterval = null;
+let cronSyncPollInFlight = false;
+let cronSyncBaselineMs = 0;
+let cronSyncDeadlineMs = 0;
 
 // Utilities
 function toFiniteNumber(value, fallback = 0) {
-    const n = typeof value === 'number' ? value : Number(value);
+    if (typeof value === 'number') return Number.isFinite(value) ? value : fallback;
+    if (typeof value === 'string') {
+        const s = value.trim().replace(/,/g, '');
+        const m = s.match(/[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?/);
+        const n = m ? Number(m[0]) : NaN;
+        return Number.isFinite(n) ? n : fallback;
+    }
+    const n = Number(value);
     return Number.isFinite(n) ? n : fallback;
+}
+
+function normalizeOddsPercent(raw) {
+    // Polymarket odds are stored as percent (0..100) by the server-side cache.
+    const n = toFiniteNumber(raw, NaN);
+    if (!Number.isFinite(n)) return NaN;
+    return Math.max(0, Math.min(100, n));
 }
 
 function computeTrendSlope(history, windowHours = 6) {
@@ -368,6 +416,16 @@ const getTimezone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
 const formatTime = () => new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
 const formatDate = (d) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 
+function formatLocalGmtOffset(d = new Date()) {
+    // JS returns minutes *behind* UTC; invert to get the local UTC offset.
+    const totalMinutes = -d.getTimezoneOffset();
+    const sign = totalMinutes >= 0 ? '+' : '-';
+    const absMinutes = Math.abs(totalMinutes);
+    const hh = Math.floor(absMinutes / 60);
+    const mm = absMinutes % 60;
+    return mm ? `GMT${sign}${hh}:${String(mm).padStart(2, '0')}` : `GMT${sign}${hh}`;
+}
+
 function getLocalTzLabel(d = new Date()) {
     try {
         const parts = new Intl.DateTimeFormat(undefined, { timeZoneName: 'short' }).formatToParts(d);
@@ -397,17 +455,32 @@ function updateTimestamp(cacheTimestamp = null) {
         return;
     }
     lastUpdateTime = next;
-    // Format the time in the viewer's local timezone
-    const hours = lastUpdateTime.getHours().toString().padStart(2, '0');
-    const mins = lastUpdateTime.getMinutes().toString().padStart(2, '0');
-    document.getElementById('lastUpdate').textContent = `${hours}:${mins}`;
-    document.getElementById('timezone').textContent = getLocalTzLabel(lastUpdateTime);
     startCountdown();
+}
+
+function startLocalClock() {
+    const timeEl = document.getElementById('lastUpdate');
+    const tzEl = document.getElementById('timezone');
+    if (!timeEl) return;
+
+    if (localClockInterval) clearInterval(localClockInterval);
+
+    const tick = () => {
+        const now = new Date();
+        // Show the viewer's current local time (DST-aware).
+        timeEl.textContent = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+        if (tzEl) tzEl.textContent = formatLocalGmtOffset(now);
+    };
+
+    tick();
+    localClockInterval = setInterval(tick, 1000);
 }
 
 function updatePyLastUpdate(data) {
     const el = document.getElementById('pyLastUpdate');
     if (!el) return;
+
+    state.serverNextUpdateMs = toFiniteNumber(data?.betterlife_next_update_ms, 0);
 
     const candidates = [
         data?.strikeraedar_updated_ms,
@@ -437,9 +510,13 @@ function updatePyLastUpdate(data) {
         return;
     }
 
-    const hh = best.getUTCHours().toString().padStart(2, '0');
-    const mm = best.getUTCMinutes().toString().padStart(2, '0');
-    el.textContent = `${hh}:${mm} UTC`;
+    // Display in the viewer's local time (avoid confusing "UTC"/offset differences).
+    const hh = best.getHours().toString().padStart(2, '0');
+    const mm = best.getMinutes().toString().padStart(2, '0');
+    el.textContent = `${hh}:${mm}`;
+
+    // Also drive the countdown off the server's "last data updated" timestamp.
+    updateTimestamp(best.getTime());
 }
 
 function safeExternalUrl(url) {
@@ -447,6 +524,31 @@ function safeExternalUrl(url) {
     const trimmed = url.trim();
     if (!/^https?:\/\//i.test(trimmed)) return null;
     return trimmed;
+}
+
+function normalizePolymarketUrl(url) {
+    const u = safeExternalUrl(url);
+    if (!u) return null;
+    if (u === 'https://polymarket.com' || u === 'https://polymarket.com/') return 'https://polymarket.com/search?_q=iran';
+    // Normalize legacy query param (?q=...) to the current one (?_q=...).
+    if (u.startsWith('https://polymarket.com/search?') && !u.includes('_q=')) {
+        try {
+            const parsed = new URL(u);
+            const legacy = parsed.searchParams.get('q');
+            if (legacy) return `https://polymarket.com/search?_q=${encodeURIComponent(legacy)}`;
+        } catch (e) { }
+    }
+    return u;
+}
+
+function normalizeNotamSearchUrl(url) {
+    const u = safeExternalUrl(url);
+    if (!u) return null;
+    // Old links sometimes point at the legacy landing page; send users to the app UI.
+    if (u.startsWith('https://notams.aim.faa.gov/notamSearch/') && !u.includes('nsapp.html')) {
+        return 'https://notams.aim.faa.gov/notamSearch/nsapp.html#/';
+    }
+    return u;
 }
 
 function getFirstArticleUrl(articles) {
@@ -476,17 +578,88 @@ function getArticleSources(articles, max = 6) {
 const SOURCE_URLS = {
     news: null, // dynamic (article) fallback is set in updateSourceLinks
     trends: 'https://www.gdeltproject.org/',
-    aviation: 'https://opensky-network.org/',
+    aviation: 'https://www.flightradar24.com/32.42,53.68',
     maritime: 'https://www.ukmto.org/',
     military: 'https://opensky-network.org/',
     markets: 'https://finance.yahoo.com/',
     pentagon: 'https://pizzint.watch',
-    polymarket: 'https://polymarket.com/',
-    airspace: 'https://notams.aim.faa.gov/notamSearch/',
-    weather: 'https://openweathermap.org/api',
+    polymarket: 'https://polymarket.com/search?_q=iran',
+    airspace: 'https://notams.aim.faa.gov/notamSearch/nsapp.html#/',
+    weather: 'https://open-meteo.com/',
     gps: null, // dynamic (article) fallback is set in updateSourceLinks
     diplomats: null // dynamic (article) fallback is set in updateSourceLinks
 };
+
+function buildGdeltDocUrl() {
+    const gdeltQuery = encodeURIComponent('iran attack OR iran strike OR iran military OR iran us');
+    return `https://api.gdeltproject.org/api/v2/doc/doc?query=${gdeltQuery}&mode=artlist&maxrecords=50&format=json&timespan=24h`;
+}
+
+function buildGdeltDocHtmlUrl() {
+    // Use HTML output so the link is human-readable in a browser (not raw JSON).
+    const gdeltQuery = encodeURIComponent('iran attack OR iran strike OR iran military OR iran us');
+    return `https://api.gdeltproject.org/api/v2/doc/doc?query=${gdeltQuery}&mode=artlist&maxrecords=50&format=html&timespan=24h`;
+}
+
+function buildWikipediaArticleUrl(article) {
+    const a = String(article || '').trim();
+    if (!a) return 'https://en.wikipedia.org/';
+    const cleaned = a.replace(/ /g, '_');
+    const looksEncoded = /%[0-9A-Fa-f]{2}/.test(cleaned);
+    const encoded = looksEncoded ? cleaned : encodeURIComponent(cleaned);
+    return `https://en.wikipedia.org/wiki/${encoded}`;
+}
+
+function buildWikiPageviewsToolUrl(pages) {
+    const list = Array.isArray(pages) ? pages : [pages];
+    const cleaned = list
+        .map(p => String(p || '').trim())
+        .filter(Boolean)
+        .map(p => p.replace(/ /g, '_'));
+    const joined = cleaned.join('|');
+    if (!joined) return 'https://pageviews.wmcloud.org/';
+    return `https://pageviews.wmcloud.org/?project=en.wikipedia.org&platform=all-access&agent=all-agents&range=latest-30&pages=${encodeURIComponent(joined)}`;
+}
+
+function buildWikiPageviewsUrl(article) {
+    // Use yesterday (UTC) to match the server-side interest signal behavior.
+    const d = new Date(Date.now() - 86400000);
+    const ymd = d.toISOString().slice(0, 10).replace(/-/g, '');
+    const a = String(article || '').trim();
+    return `https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article/en.wikipedia/all-access/all-agents/${a}/daily/${ymd}/${ymd}`;
+}
+
+function buildOpenMeteoTehranUrl() {
+    const lat = 35.6892;
+    const lon = 51.3890;
+    return `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=cloud_cover,precipitation,visibility,wind_speed_10m,temperature_2m&timezone=UTC`;
+}
+
+function buildOpenSkyIranUrl() {
+    return 'https://opensky-network.org/api/states/all?lamin=25&lomin=44&lamax=40&lomax=64';
+}
+
+function buildOpenSkyRegionUrl() {
+    return 'https://opensky-network.org/api/states/all?lamin=15&lomin=34&lamax=42&lomax=64';
+}
+
+function filterArticleSources(articles, predicate, max = 8) {
+    if (!Array.isArray(articles)) return [];
+    const out = [];
+    const seen = new Set();
+    for (const a of articles) {
+        if (!a || typeof a !== 'object') continue;
+        const title = String(a.title || a.headline || '').trim();
+        const url = safeExternalUrl(a.url) || safeExternalUrl(a.link) || safeExternalUrl(a.source_url);
+        if (!url || seen.has(url)) continue;
+        const text = `${title} ${(a.description || a.content || '')}`.trim();
+        if (!predicate(text)) continue;
+        out.push({ title: title || 'Source', url });
+        seen.add(url);
+        if (out.length >= max) break;
+    }
+    return out;
+}
 
 function setSourceLink(id, url) {
     const el = document.getElementById(id);
@@ -508,19 +681,82 @@ function setSourceLink(id, url) {
 
 function updateSourceLinks(data) {
     const articles = data?.news_intel?.articles;
-    const sources = getArticleSources(articles, 8);
+    const sources = getArticleSources(articles, 12);
     const firstArticle = sources.length === 1 ? sources[0].url : getFirstArticleUrl(articles);
 
-    const polymarketUrl = safeExternalUrl(data?.polymarket?.url) ||
-        safeExternalUrl(data?.polymarket?.market_url) ||
-        SOURCE_URLS.polymarket;
+    // Always default the source button to the Iran search (even if a single market is selected),
+    // so users land on the broader Iran context.
+    const polymarketUrl = SOURCE_URLS.polymarket;
 
-    setSourceLinkOrMenu('newsSource', 'News Intel', sources, firstArticle || 'https://www.bbc.com/news');
-    setSourceLink('trendsSource', SOURCE_URLS.trends);
-    setSourceLink('flightSource', SOURCE_URLS.aviation);
-    setSourceLinkOrMenu('maritimeSource', 'Maritime NtM (Hormuz)', sources, firstArticle || SOURCE_URLS.maritime);
-    setSourceLink('militarySource', SOURCE_URLS.military);
-    setSourceLink('weatherSource', SOURCE_URLS.weather);
+    // NEWS (exact: RSS article URLs)
+    const rssFallback = [
+        { title: 'BBC Middle East RSS', url: 'http://feeds.bbci.co.uk/news/world/middle_east/rss.xml' },
+        { title: 'Al Jazeera RSS', url: 'https://www.aljazeera.com/xml/rss/all.xml' }
+    ];
+    setSourceLinkOrMenu('newsSource', 'News Intel', sources.length ? sources : rssFallback, firstArticle || rssFallback[0].url, true);
+
+    // PUBLIC INTEREST (exact: API endpoints)
+    const trendsSources = [
+        { title: 'GDELT (last 24h) — Iran escalation query', url: buildGdeltDocHtmlUrl() },
+        { title: 'Wikipedia Pageviews (tool)', url: buildWikiPageviewsToolUrl(['Iran', 'Iran%E2%80%93United_States_relations', 'Iran%E2%80%93Israel_conflict']) },
+        { title: 'Wikipedia: Iran', url: buildWikipediaArticleUrl('Iran') },
+        { title: 'Wikipedia: Iran–United States relations', url: buildWikipediaArticleUrl('Iran%E2%80%93United_States_relations') },
+        { title: 'Wikipedia: Iran–Israel conflict', url: buildWikipediaArticleUrl('Iran%E2%80%93Israel_conflict') }
+    ];
+    setSourceLinkOrMenu('trendsSource', 'Public Interest', trendsSources, SOURCE_URLS.trends, true);
+
+    // CIVIL AVIATION (exact: OpenSky endpoint used)
+    const flightSources = [
+        { title: 'FlightRadar24 (Iran map)', url: SOURCE_URLS.aviation },
+        { title: 'OpenSky (Iran airspace — live)', url: buildOpenSkyIranUrl() },
+        { title: 'OpenSky Explorer', url: 'https://opensky-network.org/network/explorer' },
+        { title: 'OpenSky REST API docs', url: 'https://opensky-network.org/apidoc/rest.html' }
+    ];
+    setSourceLinkOrMenu('flightSource', 'Civil Aviation', flightSources, SOURCE_URLS.aviation, true);
+
+    // MARITIME NtM (exact: matched articles when available, otherwise UKMTO/IMO reference)
+    const maritimeSources = filterArticleSources(articles, (t) => {
+        const s = String(t || '');
+        return /(strait of hormuz|\bhormuz\b|gulf of oman|persian gulf|bandar abbas|qeshm)/i.test(s) &&
+            /(notice(?:s)? to mariners|\bntm\b|navtex|navarea|navigational warning|maritime safety|shipping advisory|ukmto|imac)/i.test(s);
+    }, 8);
+    const maritimeFallback = [
+        { title: 'UKMTO (Advisories)', url: 'https://www.ukmto.org/' },
+        { title: 'IMO Maritime Safety Information', url: 'https://www.imo.org/en/OurWork/Safety/Pages/MSI.aspx' }
+    ];
+    setSourceLinkOrMenu('maritimeSource', 'Maritime NtM (Hormuz)', maritimeSources.length ? maritimeSources : maritimeFallback, maritimeFallback[0].url, true);
+
+    // MILITARY TRACKERS (exact: OpenSky endpoint used)
+    const militaryMatches = Array.isArray(data?.military_matches) ? data.military_matches : [];
+    const militaryMatchSources = militaryMatches.slice(0, 8).map((m) => {
+        const icao24 = String(m?.icao24 || '').trim().toLowerCase();
+        const callsign = String(m?.callsign || '').trim().toUpperCase();
+        const reason = String(m?.reason || '').trim();
+        const titleCore = callsign || icao24 || 'Tracked asset';
+        const suffix = [];
+        if (icao24 && callsign) suffix.push(icao24);
+        if (reason) suffix.push(reason);
+        const title = `${titleCore}${suffix.length ? ` · ${suffix.join(' · ')}` : ''}`;
+
+        const explorer = safeExternalUrl(m?.links?.explorer);
+        const track = safeExternalUrl(m?.links?.track);
+        return { title, url: explorer || track || SOURCE_URLS.military };
+    });
+
+    const militarySources = [
+        ...militaryMatchSources,
+        { title: 'OpenSky Explorer', url: 'https://opensky-network.org/network/explorer' },
+        { title: 'OpenSky REST API docs', url: 'https://opensky-network.org/apidoc/rest.html' }
+    ];
+    const militaryDefault = (militaryMatchSources[0] && safeExternalUrl(militaryMatchSources[0].url)) || SOURCE_URLS.military;
+    setSourceLinkOrMenu('militarySource', 'Military Trackers', militarySources, militaryDefault, true);
+
+    // WEATHER (exact: Open-Meteo request used)
+    const weatherSources = [
+        { title: 'Open-Meteo (website)', url: 'https://open-meteo.com/' },
+        { title: 'Open-Meteo docs', url: 'https://open-meteo.com/en/docs' }
+    ];
+    setSourceLinkOrMenu('weatherSource', 'Operational Conditions (Weather)', weatherSources, SOURCE_URLS.weather, true);
     // Stock markets: show exact per-ticker links when available.
     const marketSources = [];
     const tickerByRegion = { US: '^GSPC', ISRAEL: 'EIS', BITCOIN: 'BTC-USD', ETHEREUM: 'ETH-USD' };
@@ -533,24 +769,32 @@ function updateSourceLinks(data) {
         marketSources.push({ title: `${region} · ${t}${changeText}`, url });
     }
     setSourceLinkOrMenu('marketsSource', 'Stock Markets (Yahoo Finance)', marketSources, SOURCE_URLS.markets, true);
-    setSourceLink('pentagonSource', SOURCE_URLS.pentagon);
-    // Market odds: force a menu so users can see the exact URL (some mobile UIs hide "title" tooltips).
+    setSourceLinkOrMenu('pentagonSource', 'Pentagon Pizza', [{ title: 'PizzInt', url: SOURCE_URLS.pentagon }], SOURCE_URLS.pentagon, true);
+    // Market odds: show multiple matched markets when available.
+    const pmSourcesRaw = Array.isArray(data?.polymarket?.sources) ? data.polymarket.sources : [];
+    const pmSourcesAll = pmSourcesRaw
+        .map(s => ({ title: String(s?.title || 'Polymarket').trim(), url: normalizePolymarketUrl(s?.url) }))
+        .filter(s => s.url);
+    const pmSourcesFocused = pmSourcesAll.filter(s => /(iran|tehran|hormuz)/i.test(`${s.title} ${s.url}`));
+    const pmSources = pmSourcesFocused.length ? pmSourcesFocused : pmSourcesAll;
     const pmMarket = (data?.polymarket?.market || data?.polymarket?.question || '').toString().trim();
-    setSourceLinkOrMenu(
-        'polymarketSource',
-        'Market Odds (Polymarket)',
-        [{ title: pmMarket ? `Polymarket · ${pmMarket}` : 'Polymarket', url: polymarketUrl }],
-        polymarketUrl,
-        true
-    );
+    const pmList = pmSources.length ? pmSources : [{ title: pmMarket ? `Polymarket · ${pmMarket}` : 'Polymarket', url: polymarketUrl }];
+    setSourceLinkOrMenu('polymarketSource', 'Market Odds (Polymarket)', pmList, polymarketUrl, true);
 
     // Airspace NOTAMs: force a menu so the full source URL is visible/copyable.
-    const airspaceUrl = safeExternalUrl(data?.airspace?.source_url) || SOURCE_URLS.airspace;
+    const airspaceUrl = normalizeNotamSearchUrl(data?.airspace?.source_url) || SOURCE_URLS.airspace;
     const firCodes = Array.isArray(data?.airspace?.fir_codes) ? data.airspace.fir_codes.filter(Boolean) : [];
-    const airTitle = firCodes.length ? `FAA NOTAM Search (FIR: ${firCodes.join(', ')})` : 'FAA NOTAM Search';
+    const airTitle = firCodes.length ? `FAA NOTAM Search (${firCodes.join(', ')})` : 'FAA NOTAM Search';
     setSourceLinkOrMenu('airspaceSource', 'Airspace NOTAMs', [{ title: airTitle, url: airspaceUrl }], airspaceUrl, true);
-    setSourceLinkOrMenu('gpsSource', 'GPS/GNSS Interference', sources, firstArticle || 'https://www.gdeltproject.org/');
-    setSourceLinkOrMenu('diplomatsSource', 'Diplomatic Posture', sources, firstArticle || 'https://www.state.gov/');
+
+    // GPS / DIPLOMATS (exact: matched articles)
+    const gpsSources = filterArticleSources(articles, (t) => /(gps|gnss)/i.test(t) && /(spoof|jamm|interference)/i.test(t), 8);
+    const gpsFallback = [{ title: 'GDELT Project', url: 'https://www.gdeltproject.org/' }];
+    setSourceLinkOrMenu('gpsSource', 'GPS/GNSS Interference', gpsSources.length ? gpsSources : gpsFallback, gpsFallback[0].url, true);
+
+    const dipSources = filterArticleSources(articles, (t) => /(embassy|consulate|diplomat|diplomatic|ambassador)/i.test(t) && /(evacuat|ordered departure|withdraw|relocat|transfer|reassign|recalled|closed)/i.test(t), 8);
+    const dipFallback = [{ title: 'U.S. State Department', url: 'https://www.state.gov/' }];
+    setSourceLinkOrMenu('diplomatsSource', 'Diplomatic Posture', dipSources.length ? dipSources : dipFallback, dipFallback[0].url, true);
 }
 
 function setSourceLinkOrMenu(id, title, sources, fallbackUrl, forceMenuIfSingle = false) {
@@ -577,7 +821,8 @@ function setSourceLinkOrMenu(id, title, sources, fallbackUrl, forceMenuIfSingle 
     el.dataset.menuTitle = title;
     el.classList.remove('disabled');
     el.classList.add('multi');
-    el.setAttribute('href', '#');
+    const direct = safeExternalUrl(fallbackUrl) || (list[0]?.url ? safeExternalUrl(list[0].url) : null);
+    el.setAttribute('href', direct || '#');
     el.setAttribute('title', 'Open sources');
 }
 
@@ -716,19 +961,117 @@ function openSourceMenu(anchorEl, title, sources) {
 
 function startCountdown() {
     if (countdownInterval) clearInterval(countdownInterval);
-    countdownInterval = setInterval(() => {
-        if (!lastUpdateTime) return;
-        const elapsed = Math.floor((Date.now() - lastUpdateTime.getTime()) / 1000);
-        const remaining = Math.max(0, 1800 - elapsed); // 30 minutes = 1800 seconds
+    const tick = () => {
+        const nowMs = Date.now();
+        const nextRunMs = computeNextRefreshTargetMs(nowMs);
+
+        const remaining = Math.max(0, Math.floor((nextRunMs - nowMs) / 1000));
         const mins = Math.floor(remaining / 60);
         const secs = remaining % 60;
         const nextEl = document.getElementById('nextUpdate');
+        if (!nextEl) return;
         if (remaining > 0) {
-            nextEl.textContent = `Next in ${mins}:${secs.toString().padStart(2, '0')}`;
+            nextEl.textContent = `Next update in ${mins}:${secs.toString().padStart(2, '0')}`;
         } else {
             nextEl.textContent = 'Updating...';
         }
-    }, 1000);
+    };
+
+    tick();
+    countdownInterval = setInterval(tick, 1000);
+}
+
+function computeNextCronStartMs(nowMs = Date.now()) {
+    return (Math.floor(nowMs / SERVER_UPDATE_INTERVAL_MS) + 1) * SERVER_UPDATE_INTERVAL_MS;
+}
+
+function getLastDataUpdateMs() {
+    const lastMs = (lastUpdateTime && Number.isFinite(lastUpdateTime.getTime()))
+        ? lastUpdateTime.getTime()
+        : toFiniteNumber(state.lastCacheSeenMs, 0);
+    return Number.isFinite(lastMs) && lastMs > 0 ? lastMs : 0;
+}
+
+function computeNextRefreshTargetMs(nowMs = Date.now()) {
+    const serverNextMs = toFiniteNumber(state.serverNextUpdateMs, 0);
+    if (serverNextMs) {
+        let next = serverNextMs;
+        while (next <= nowMs) next += SERVER_UPDATE_INTERVAL_MS;
+        return next;
+    }
+
+    const lastMs = getLastDataUpdateMs();
+
+    // If we have a concrete "last data updated" timestamp, base the next refresh countdown off it,
+    // plus a 1-minute grace to account for workflow runtime/propagation.
+    if (lastMs) {
+        let next = lastMs + SERVER_UPDATE_INTERVAL_MS + CRON_SYNC_GRACE_MS;
+        while (next <= nowMs) next += SERVER_UPDATE_INTERVAL_MS;
+        return next;
+    }
+
+    // Fallback: align to cron boundaries when we don't yet know the last update time.
+    return computeNextCronStartMs(nowMs) + CRON_SYNC_GRACE_MS;
+}
+
+function stopCronSyncPoll() {
+    if (cronSyncPollInterval) {
+        clearInterval(cronSyncPollInterval);
+        cronSyncPollInterval = null;
+    }
+    cronSyncPollInFlight = false;
+    cronSyncBaselineMs = 0;
+    cronSyncDeadlineMs = 0;
+}
+
+function scheduleCronSyncedRefresh() {
+    stopCronSyncPoll();
+    if (cronSyncTimeout) clearTimeout(cronSyncTimeout);
+
+    const nowMs = Date.now();
+    const fireAtMs = computeNextRefreshTargetMs(nowMs);
+    const delayMs = Math.max(0, fireAtMs - nowMs);
+
+    cronSyncTimeout = setTimeout(() => {
+        // If the tab is hidden, defer polling until the user returns.
+        if (document.visibilityState === 'hidden') {
+            scheduleCronSyncedRefresh();
+            return;
+        }
+
+        cronSyncBaselineMs = toFiniteNumber(state.lastCacheSeenMs, 0);
+        cronSyncDeadlineMs = fireAtMs + CRON_SYNC_MAX_POLL_MS;
+
+        const pollOnce = async () => {
+            if (document.visibilityState === 'hidden') return;
+            if (cronSyncPollInFlight) return;
+            if (cronSyncDeadlineMs && Date.now() > cronSyncDeadlineMs) {
+                stopCronSyncPoll();
+                scheduleCronSyncedRefresh();
+                return;
+            }
+
+            cronSyncPollInFlight = true;
+            try {
+                await calculate(true);
+                const seenMs = toFiniteNumber(state.lastCacheSeenMs, 0);
+                if (!cronSyncBaselineMs && seenMs) {
+                    // Establish baseline if we didn't have one yet.
+                    cronSyncBaselineMs = seenMs;
+                    return;
+                }
+                if (cronSyncBaselineMs && seenMs && seenMs !== cronSyncBaselineMs && !state.usingLocalCache) {
+                    stopCronSyncPoll();
+                    scheduleCronSyncedRefresh();
+                }
+            } finally {
+                cronSyncPollInFlight = false;
+            }
+        };
+
+        pollOnce();
+        cronSyncPollInterval = setInterval(pollOnce, CRON_SYNC_POLL_INTERVAL_MS);
+    }, delayMs);
 }
 
 function updateGauge(score) {
@@ -748,10 +1091,25 @@ function updateGauge(score) {
     label.className = `status-label ${getStatusClass(displayScore)}`;
 }
 
-function updateSignal(name, value, detail) {
+function updateSignal(name, value, detail, options = {}) {
     const valEl = document.getElementById(`${name}Value`);
     const detailEl = document.getElementById(`${name}Detail`);
     if (!valEl) return;
+
+    const { appendSparkline = true } = options || {};
+
+    // Generic unavailable handling (prevents misleading "0%" when a feed is down).
+    if (name !== 'weather') {
+        const isBadNumber = (typeof value === 'number') && !Number.isFinite(value);
+        if (value === null || value === undefined || isBadNumber) {
+            valEl.textContent = '—';
+            valEl.style.color = 'var(--text-muted)';
+            // Keep sparkline stable but non-alarming.
+            updateSparkline(name, null, '#666', { append: false });
+            if (detailEl) detailEl.textContent = detail || 'Unavailable';
+            return;
+        }
+    }
 
     if (name === 'weather') {
         // Good weather = favorable for attack = higher risk
@@ -765,20 +1123,39 @@ function updateSignal(name, value, detail) {
         const sparkColor = value === 'Favorable' ? '#f97316' : value === 'Marginal' ? '#eab308' : '#22c55e';
         updateSparkline(name, weatherNum, sparkColor);
     } else {
-        // Deterministic jitter for signal display - all users see same
+        // Deterministic jitter for signal display - all users see same.
+        // Some signals (e.g., market odds) should remain exact and not be jittered.
         let displayValue = Math.round(value) || 0;
-        const seed = getTimeBasedSeed();
-        const signalIndex = { news: 10, social: 11, flight: 12 }[name] || 13;
-        const jitterVal = Math.floor(seededRandom(seed, signalIndex) * 5) - 2;
-        displayValue = Math.max(0, Math.min(100, displayValue + jitterVal));
+        const noJitter = name === 'polymarket';
+        if (!noJitter) {
+            const seed = getTimeBasedSeed();
+            const signalIndex = { news: 10, social: 11, flight: 12 }[name] || 13;
+            const jitterVal = Math.floor(seededRandom(seed, signalIndex) * 5) - 2;
+            displayValue = Math.max(0, Math.min(100, displayValue + jitterVal));
+        } else {
+            // Preserve decimal odds for Polymarket so very small values don't collapse to "0%".
+            const n = normalizeOddsPercent(value);
+            displayValue = Number.isFinite(n) ? n : 0;
+        }
         const colorClass = getColor(displayValue);
-        valEl.textContent = `${displayValue}%`;
+        if (name === 'polymarket' && displayValue > 0 && displayValue < 1) {
+            valEl.textContent = '<1%';
+        } else if (name === 'polymarket' && !Number.isInteger(displayValue)) {
+            valEl.textContent = `${displayValue.toFixed(1)}%`;
+        } else {
+            valEl.textContent = `${Math.round(displayValue)}%`;
+        }
         valEl.style.color = `var(--${colorClass})`;
         // Update sparkline with color based on value
         const sparkColor = getSparklineColor(displayValue);
-        updateSparkline(name, displayValue, sparkColor);
+        updateSparkline(name, displayValue, sparkColor, { append: appendSparkline !== false });
     }
     if (detailEl) detailEl.textContent = detail;
+}
+
+function setSignalMuted(name) {
+    const el = document.getElementById(`${name}Value`);
+    if (el) el.style.color = 'var(--text-muted)';
 }
 
 function setIocLevel(signalName, level) {
@@ -1007,9 +1384,22 @@ function showInfo(type) {
     const info = INFO_CONTENT[type];
     document.getElementById('infoTitle').textContent = info.title;
     document.getElementById('infoBody').innerHTML = info.body;
-    document.getElementById('infoModal').classList.add('open');
+    const modal = document.getElementById('infoModal');
+    if (modal) {
+        modal.classList.add('open');
+        modal.setAttribute('aria-hidden', 'false');
+    }
+    document.body.classList.add('modal-open');
 }
-function closeInfo(e) { if (!e || e.target.id === 'infoModal') document.getElementById('infoModal').classList.remove('open'); }
+function closeInfo(e) {
+    if (e && e.target && e.target.id !== 'infoModal') return;
+    const modal = document.getElementById('infoModal');
+    if (modal) {
+        modal.classList.remove('open');
+        modal.setAttribute('aria-hidden', 'true');
+    }
+    document.body.classList.remove('modal-open');
+}
 
 function shareSnapshot() {
     trackEvent('share', 'engagement', 'snapshot_shared', state.risk);
@@ -1029,10 +1419,41 @@ function shareSnapshot() {
         navigator.share({ title: 'BetterLife', text });
         trackEvent('share', 'engagement', 'native_share', state.risk);
     } else {
-        navigator.clipboard.writeText(text).then(() => {
-            alert('Copied to clipboard!');
+        const copied = () => {
+            showToast('✅ Copied to clipboard');
             trackEvent('share', 'engagement', 'clipboard_copy', state.risk);
-        });
+        };
+
+        const manualCopy = () => {
+            try {
+                window.prompt('Copy this text:', text);
+                trackEvent('share', 'engagement', 'manual_copy_prompt', state.risk);
+            } catch (e) {
+                showToast('⚠️ Copy not supported');
+            }
+        };
+
+        try {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(text).then(copied).catch(() => manualCopy());
+                return;
+            }
+        } catch (e) { }
+
+        // Fallback for older browsers
+        try {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.left = '-9999px';
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            ta.remove();
+            copied();
+        } catch (e) {
+            manualCopy();
+        }
     }
 }
 
@@ -1048,23 +1469,19 @@ async function fetchNews() {
         let newsArticles = [];
 
         try {
-            const cb = Math.floor(Date.now() / 60000);
-            const cacheRes = await fetch(`https://api.npoint.io/${API_KEYS.npoint}?cb=${cb}`, { cache: 'no-store' });
-            if (cacheRes.ok) {
-                const cache = await cacheRes.json();
-                if (cache.news_intel && cache.news_intel.articles) {
-                    newsArticles = cache.news_intel.articles;
-                    articles = cache.news_intel.total_count || newsArticles.length;
-                    alertCount = cache.news_intel.alert_count || 0;
+            const cache = await getCache({ force: false });
+            if (cache && cache.news_intel && cache.news_intel.articles) {
+                newsArticles = cache.news_intel.articles;
+                articles = cache.news_intel.total_count || newsArticles.length;
+                alertCount = cache.news_intel.alert_count || 0;
 
-                    // Add articles to feed
-                    newsArticles.slice(0, 8).forEach(a => {
-                        const title = (a.title || '').substring(0, 80);
-                        addFeed('NEWS', title, a.is_alert, a.is_alert ? 'Alert' : null);
-                    });
+                // Add articles to feed
+                newsArticles.slice(0, 8).forEach(a => {
+                    const title = (a.title || '').substring(0, 80);
+                    addFeed('NEWS', title, a.is_alert, a.is_alert ? 'Alert' : null);
+                });
 
-                    console.log(`News Intel from cache: ${articles} articles, ${alertCount} alerts`);
-                }
+                console.log(`News Intel from cache: ${articles} articles, ${alertCount} alerts`);
             }
         } catch (e) {
             console.log('Cache read failed, using fallback');
@@ -1438,32 +1855,70 @@ function applyJitter(value, min = 0, max = 100, range = 2, index = 0) {
     return Math.max(min, Math.min(max, base + jitterAmount));
 }
 
-// npoint.io cache functions (free, no rate limits!)
+// npoint.io cache functions (throttled to avoid hammering)
 const NPOINT_ID = API_KEYS.npoint;
 
-function cacheBustValue() {
-    const build = (typeof window !== 'undefined' && window.__BUILD_ID__) ? String(window.__BUILD_ID__) : 'dev';
-    return `${Date.now()}-${build}`;
+const cacheFetchState = {
+    inflight: null,
+    lastFetchMs: 0,
+    lastData: null,
+    etag: null,
+    lastModified: null
+};
+
+function cacheBustValueUnixTime() {
+    // Unix time (seconds) to avoid CDN/browser cache collisions and keep the URL readable.
+    return Math.floor(Date.now() / 1000).toString();
 }
 
-async function getCache() {
+async function getCache({ force = false } = {}) {
     try {
-        // Best-effort cache busting across browsers/CDNs.
-        const cb = cacheBustValue();
-        const res = await fetch(`https://api.npoint.io/${NPOINT_ID}?cb=${encodeURIComponent(cb)}`, {
-            cache: 'no-store',
-            headers: {
+        const now = Date.now();
+        if (!force && cacheFetchState.lastData && (now - cacheFetchState.lastFetchMs) < 60000) {
+            return cacheFetchState.lastData;
+        }
+        if (cacheFetchState.inflight) return cacheFetchState.inflight;
+
+        cacheFetchState.inflight = (async () => {
+            cacheFetchState.lastFetchMs = now;
+            const cb = cacheBustValueUnixTime();
+            const headers = {
                 'Cache-Control': 'no-cache',
                 'Pragma': 'no-cache'
+            };
+            if (cacheFetchState.etag) headers['If-None-Match'] = cacheFetchState.etag;
+            if (cacheFetchState.lastModified) headers['If-Modified-Since'] = cacheFetchState.lastModified;
+
+            const res = await fetch(`https://api.npoint.io/${NPOINT_ID}?cb=${encodeURIComponent(cb)}`, {
+                cache: 'no-store',
+                headers
+            });
+
+            if (res.status === 304 && cacheFetchState.lastData) {
+                return cacheFetchState.lastData;
             }
+
+            if (!res.ok) {
+                return cacheFetchState.lastData;
+            }
+
+            const etag = res.headers.get('etag');
+            const lm = res.headers.get('last-modified');
+            if (etag) cacheFetchState.etag = etag;
+            if (lm) cacheFetchState.lastModified = lm;
+
+            const json = await res.json();
+            cacheFetchState.lastData = json;
+            return json;
+        })().finally(() => {
+            cacheFetchState.inflight = null;
         });
-        if (res.ok) {
-            return await res.json();
-        }
+
+        return await cacheFetchState.inflight;
     } catch (e) {
         console.log('Cache read error:', e.message);
     }
-    return null;
+    return cacheFetchState.lastData;
 }
 
 async function setCache(data, totalRisk = null) {
@@ -1550,16 +2005,7 @@ async function fetchFreshData() {
     state.seenHeadlines.clear();
 
     // First, get cached data for polymarket and pentagon (set by GitHub Action)
-    let cachedData = {};
-    try {
-        const cb = Math.floor(Date.now() / 60000);
-        const cacheRes = await fetch(`https://api.npoint.io/${API_KEYS.npoint}?cb=${cb}`, { cache: 'no-store' });
-        if (cacheRes.ok) {
-            cachedData = await cacheRes.json();
-        }
-    } catch (e) {
-        console.log('Cache fetch error:', e.message);
-    }
+    const cachedData = (await getCache({ force: false })) || {};
 
     const [news, interest, aviation, military, markets, polymarket, airspace, weatherResult] = await Promise.all([
         fetchNews(),
@@ -1606,7 +2052,9 @@ async function fetchFreshData() {
         const contribution = Math.min(15, usScore + ilScore + btcScore + ethScore);
         marketsDisplay = Math.min(100, Math.round((contribution / 15) * 100));
     }
-    const polymarketOdds = cachedData.polymarket?.odds || 0;
+    const polymarketOdds = (cachedData.polymarket && cachedData.polymarket.odds !== null && cachedData.polymarket.odds !== undefined)
+        ? cachedData.polymarket.odds
+        : null;
     const polymarketDisplay = polymarketOdds; // Direct percentage
     const airspaceDisplay = cachedData.airspace?.score ? Math.min(100, cachedData.airspace.score * 2) : 10;
     const weatherDisplay = weatherContribution >= 4.5 ? 100 : weatherContribution >= 2.5 ? 55 : 20;
@@ -1816,11 +2264,22 @@ function displayData(data, fromCache = false) {
     // MARKETS (Server-side)
     let marketsContribution = 0;
     if (data.markets && data.markets.data) {
+        const md = data.markets.data || {};
+        const hasAnyMarketData = ['US', 'ISRAEL', 'BITCOIN', 'ETHEREUM'].some(k => {
+            const v = toFiniteNumber(md?.[k]?.change_percent, NaN);
+            return Number.isFinite(v);
+        });
+        if (!hasAnyMarketData) {
+            // Avoid showing misleading 0% when the feed failed / missing library on server.
+            marketsContribution = 2; // small baseline so totals don't collapse to zero
+            updateSignal('markets', null, 'Awaiting data...');
+            setStatus('marketsStatus', false);
+        } else {
         // Per-market scoring with special BTC weight (BTC trades 24/7)
-        const usChange = toFiniteNumber(data.markets.data.US?.change_percent, 0);
-        const ilChange = toFiniteNumber(data.markets.data.ISRAEL?.change_percent, 0);
-        const btcChange = toFiniteNumber(data.markets.data.BITCOIN?.change_percent, 0);
-        const ethChange = toFiniteNumber(data.markets.data.ETHEREUM?.change_percent, 0);
+        const usChange = toFiniteNumber(md.US?.change_percent, 0);
+        const ilChange = toFiniteNumber(md.ISRAEL?.change_percent, 0);
+        const btcChange = toFiniteNumber(md.BITCOIN?.change_percent, 0);
+        const ethChange = toFiniteNumber(md.ETHEREUM?.change_percent, 0);
 
         const scoreFromChange = (change, thresholds) => {
             // change is % day-over-day (negative = risk)
@@ -1842,12 +2301,12 @@ function displayData(data, fromCache = false) {
         
         // Build detailed string showing all markets
         let detailStr = data.markets.summary || 'Monitoring';
-        if (data.markets.data) {
+        if (md) {
             const states = [];
-            if (data.markets.data.US) states.push(`US${data.markets.data.US.status === 'RED' ? '🔴' : '🟢'}`);
-            if (data.markets.data.ISRAEL) states.push(`IL${data.markets.data.ISRAEL.status === 'RED' ? '🔴' : '🟢'}`);
-            if (data.markets.data.BITCOIN) states.push(`BTC${data.markets.data.BITCOIN.status === 'RED' ? '🔴' : '🟢'}`);
-            if (data.markets.data.ETHEREUM) states.push(`ETH${data.markets.data.ETHEREUM.status === 'RED' ? '🔴' : '🟢'}`);
+            if (md.US) states.push(`US${md.US.status === 'RED' ? '🔴' : '🟢'}`);
+            if (md.ISRAEL) states.push(`IL${md.ISRAEL.status === 'RED' ? '🔴' : '🟢'}`);
+            if (md.BITCOIN) states.push(`BTC${md.BITCOIN.status === 'RED' ? '🔴' : '🟢'}`);
+            if (md.ETHEREUM) states.push(`ETH${md.ETHEREUM.status === 'RED' ? '🔴' : '🟢'}`);
             if (states.length > 0) detailStr = states.join(' ');
         }
         
@@ -1862,32 +2321,87 @@ function displayData(data, fromCache = false) {
             addFeed('MARKETS', `Crypto risk-off ${parts.join(', ')} (24/7 sentiment)`, true, 'Alert');
         }
         else if (!fromCache && (usScore + ilScore) >= 8) addFeed('MARKETS', `Equity risk-off: US ${usChange.toFixed(2)}%, IL ${ilChange.toFixed(2)}%`, true, 'Alert');
+        }
     } else {
-        updateSignal('markets', 10, 'Waiting for data...');
+        marketsContribution = 2;
+        updateSignal('markets', null, 'Awaiting data...');
+        setStatus('marketsStatus', false);
     }
 
     // Polymarket odds signal (from cached data updated by GitHub Actions)
     let polymarketOdds = 0;
     let polymarketContribution = 1; // baseline
-    if (data.polymarket && data.polymarket.odds !== undefined) {
-        // Safety: odds should be 0-100, cap at 100
-        polymarketOdds = Math.min(100, Math.max(0, toFiniteNumber(data.polymarket.odds, 0)));
+    if (data.polymarket && (data.polymarket.odds !== undefined || data.polymarket.available === false || data.polymarket.market)) {
+        const marketTitleRaw = String(data.polymarket.market || '').trim();
+        const lowerTitle = marketTitleRaw.toLowerCase();
+        const marketTitle = lowerTitle.includes('no active iran-related market matched')
+            ? 'No Iran-related market matched (see search)'
+            : marketTitleRaw;
+        const pmAvailableFlag = data.polymarket.available;
+        const rawOdds = data.polymarket.odds;
+        const parsedOdds = normalizeOddsPercent(rawOdds);
+        const unavailable =
+            pmAvailableFlag === false ||
+            !Number.isFinite(parsedOdds) ||
+            lowerTitle.includes('unavailable') ||
+            lowerTitle.includes('no active');
 
-        polymarketContribution = Math.min(10, polymarketOdds * 0.1);
-        const marketTitle = data.polymarket.market || 'Iran strike';
+        const pmSourcesRaw = Array.isArray(data?.polymarket?.sources) ? data.polymarket.sources : [];
+        const pmExtra = Math.max(0, pmSourcesRaw.length - 1);
 
-        updateSignal('polymarket', polymarketOdds, `${polymarketOdds}% odds`);
-        setStatus('polymarketStatus', true);
+        if (unavailable) {
+            // If we have a last-known good odds snapshot, display it as stale rather than a blank.
+            const last = state.lastKnown?.polymarket;
+            const lastOdds = normalizeOddsPercent(last?.odds);
+            const fallbackOdds = Number.isFinite(lastOdds) ? lastOdds : (Number.isFinite(parsedOdds) && parsedOdds > 0 ? parsedOdds : NaN);
+            polymarketContribution = 1;
+            if (Number.isFinite(fallbackOdds)) {
+                polymarketOdds = Math.min(100, Math.max(0, fallbackOdds));
+                updateSignal('polymarket', polymarketOdds, `${polymarketOdds}% odds (stale)`, { appendSparkline: false });
+                setSignalMuted('polymarket');
+                updateSparkline('polymarket', null, '#666', { append: false, neutralValue: polymarketOdds });
+                setStatus('polymarketStatus', false);
+            } else {
+                updateSignal('polymarket', null, marketTitle || 'Unavailable');
+                setStatus('polymarketStatus', false);
+            }
+        } else {
+            // Safety: odds should be 0-100, cap at 100
+            polymarketOdds = Math.min(100, Math.max(0, parsedOdds));
+            polymarketContribution = Math.min(10, polymarketOdds * 0.1);
+            const extraText = pmExtra > 0 ? ` (+${pmExtra} markets)` : '';
+            updateSignal('polymarket', polymarketOdds, `${polymarketOdds}% odds${extraText}`);
+            setStatus('polymarketStatus', true);
+            state.lastKnown.polymarket = {
+                odds: polymarketOdds,
+                market: marketTitle || null,
+                url: safeExternalUrl(data?.polymarket?.url) || safeExternalUrl(data?.polymarket?.market_url) || null
+            };
 
-        if (!fromCache && polymarketOdds >= 0) {
-            const url = safeExternalUrl(data?.polymarket?.url) || safeExternalUrl(data?.polymarket?.market_url);
-            const isAlert = polymarketOdds > 30;
-            addFeed('MARKET', `📊 Polymarket: ${polymarketOdds}% odds on "${marketTitle.substring(0, 48)}"`, isAlert, isAlert ? 'Alert' : null, null, url);
+            if (!fromCache && polymarketOdds >= 0) {
+                const url = safeExternalUrl(data?.polymarket?.url) || safeExternalUrl(data?.polymarket?.market_url);
+                const isAlert = polymarketOdds > 30;
+                addFeed('MARKET', `📊 Polymarket: ${polymarketOdds}% odds on "${(marketTitle || 'Market').substring(0, 48)}"`, isAlert, isAlert ? 'Alert' : null, null, url);
+            }
         }
     } else {
-        // No cached polymarket data yet - show baseline
-        updateSignal('polymarket', 10, 'Awaiting data...');
-        setStatus('polymarketStatus', true);
+        // Cache schema can be missing `polymarket` (older builds / partial cache writes).
+        // Prefer last-known odds or sparkline history so the UI doesn't go blank.
+        const last = state.lastKnown?.polymarket;
+        const lastOdds = normalizeOddsPercent(last?.odds);
+        const hist = Array.isArray(state.signalHistory?.polymarket) ? state.signalHistory.polymarket : [];
+        const histLast = hist.length ? toFiniteNumber(hist[hist.length - 1], NaN) : NaN;
+        const fallbackOdds = Number.isFinite(lastOdds) ? lastOdds : (Number.isFinite(histLast) && histLast > 0 ? histLast : NaN);
+        polymarketContribution = 1;
+        if (Number.isFinite(fallbackOdds)) {
+            polymarketOdds = Math.min(100, Math.max(0, fallbackOdds));
+            updateSignal('polymarket', polymarketOdds, `${polymarketOdds}% odds (stale)`, { appendSparkline: false });
+            setSignalMuted('polymarket');
+            updateSparkline('polymarket', null, '#666', { append: false, neutralValue: polymarketOdds });
+        } else {
+            updateSignal('polymarket', null, 'Awaiting data...');
+        }
+        setStatus('polymarketStatus', false);
     }
     // Store for total calculation
     const safePolymarketCalc = polymarketContribution;
@@ -2103,7 +2617,7 @@ function displayData(data, fromCache = false) {
         };
 
         const firstArticle = getFirstArticleUrl(data?.news_intel?.articles);
-        const polymarketUrl = safeExternalUrl(data?.polymarket?.url) || safeExternalUrl(data?.polymarket?.market_url) || SOURCE_URLS.polymarket;
+        const polymarketUrl = SOURCE_URLS.polymarket;
         const urls = {
             news: firstArticle || 'https://www.bbc.com/news',
             interest: SOURCE_URLS.trends,
@@ -2365,9 +2879,9 @@ let lastAPICall = 0;
 const MIN_API_INTERVAL = 15 * 60 * 1000; // Minimum 15 minutes between API calls
 
 // MASTER CALCULATION - checks cache first, only calls APIs if cache is old
-async function calculate() {
+async function calculate(force = false) {
     // Read-only mode: always render from the shared cache for consistent values across users.
-    let cached = await getCache();
+    let cached = await getCache({ force });
     let usedLocalFallback = false;
 
     if (!cached) {
@@ -2404,7 +2918,7 @@ async function calculate() {
     updateSignal('maritime', 0, 'Awaiting data...');
     updateSignal('military', 10, 'Awaiting data...');
     updateSignal('weather', 'Marginal', 'Awaiting data...');
-    updateSignal('polymarket', 0, '0% odds');
+    updateSignal('polymarket', null, 'Awaiting data...');
     updateSignal('pentagon', 10, 'Awaiting data...');
     updateSignal('gps', 5, 'Awaiting data...');
     updateSignal('diplomats', 5, 'Awaiting data...');
@@ -2489,19 +3003,72 @@ function updateChartFromHistory(history) {
 }
 
 function primeStaticSourceMenus() {
+    const rssFallback = [
+        { title: 'BBC Middle East RSS', url: 'http://feeds.bbci.co.uk/news/world/middle_east/rss.xml' },
+        { title: 'Al Jazeera RSS', url: 'https://www.aljazeera.com/xml/rss/all.xml' }
+    ];
+    setSourceLinkOrMenu('newsSource', 'News Intel', rssFallback, rssFallback[0].url, true);
+
+    const trendsSources = [
+        { title: 'GDELT (last 24h) — Iran escalation query', url: buildGdeltDocHtmlUrl() },
+        { title: 'Wikipedia Pageviews (tool)', url: buildWikiPageviewsToolUrl(['Iran', 'Iran%E2%80%93United_States_relations', 'Iran%E2%80%93Israel_conflict']) },
+        { title: 'Wikipedia: Iran', url: buildWikipediaArticleUrl('Iran') },
+        { title: 'Wikipedia: Iran–United States relations', url: buildWikipediaArticleUrl('Iran%E2%80%93United_States_relations') },
+        { title: 'Wikipedia: Iran–Israel conflict', url: buildWikipediaArticleUrl('Iran%E2%80%93Israel_conflict') }
+    ];
+    setSourceLinkOrMenu('trendsSource', 'Public Interest', trendsSources, SOURCE_URLS.trends, true);
+
+    const flightSources = [
+        { title: 'OpenSky Explorer', url: 'https://opensky-network.org/network/explorer' },
+        { title: 'OpenSky REST API docs', url: 'https://opensky-network.org/apidoc/rest.html' }
+    ];
+    setSourceLinkOrMenu('flightSource', 'Civil Aviation', flightSources, SOURCE_URLS.aviation, true);
+
+    const maritimeFallback = [
+        { title: 'UKMTO (Advisories)', url: 'https://www.ukmto.org/' },
+        { title: 'IMO Maritime Safety Information', url: 'https://www.imo.org/en/OurWork/Safety/Pages/MSI.aspx' }
+    ];
+    setSourceLinkOrMenu('maritimeSource', 'Maritime NtM (Hormuz)', maritimeFallback, maritimeFallback[0].url, true);
+
+    const militarySources = [
+        { title: 'OpenSky Explorer', url: 'https://opensky-network.org/network/explorer' },
+        { title: 'OpenSky REST API docs', url: 'https://opensky-network.org/apidoc/rest.html' }
+    ];
+    setSourceLinkOrMenu('militarySource', 'Military Trackers', militarySources, SOURCE_URLS.military, true);
+
+    const weatherSources = [
+        { title: 'Open-Meteo (website)', url: 'https://open-meteo.com/' },
+        { title: 'Open-Meteo docs', url: 'https://open-meteo.com/en/docs' }
+    ];
+    setSourceLinkOrMenu('weatherSource', 'Operational Conditions (Weather)', weatherSources, SOURCE_URLS.weather, true);
+
     const tickerByRegion = { US: '^GSPC', ISRAEL: 'EIS', BITCOIN: 'BTC-USD', ETHEREUM: 'ETH-USD' };
     const marketSources = Object.entries(tickerByRegion).map(([region, t]) => ({
         title: `${region} · ${t}`,
         url: `https://finance.yahoo.com/quote/${encodeURIComponent(t)}`
     }));
     setSourceLinkOrMenu('marketsSource', 'Stock Markets (Yahoo Finance)', marketSources, SOURCE_URLS.markets, true);
+
+    setSourceLinkOrMenu('pentagonSource', 'Pentagon Pizza', [{ title: 'PizzInt', url: SOURCE_URLS.pentagon }], SOURCE_URLS.pentagon, true);
     setSourceLinkOrMenu('polymarketSource', 'Market Odds (Polymarket)', [{ title: 'Polymarket', url: SOURCE_URLS.polymarket }], SOURCE_URLS.polymarket, true);
     setSourceLinkOrMenu('airspaceSource', 'Airspace NOTAMs', [{ title: 'FAA NOTAM Search', url: SOURCE_URLS.airspace }], SOURCE_URLS.airspace, true);
+
+    const gpsFallback = [{ title: 'GDELT Project', url: 'https://www.gdeltproject.org/' }];
+    setSourceLinkOrMenu('gpsSource', 'GPS/GNSS Interference', gpsFallback, gpsFallback[0].url, true);
+
+    const dipFallback = [{ title: 'U.S. State Department', url: 'https://www.state.gov/' }];
+    setSourceLinkOrMenu('diplomatsSource', 'Diplomatic Posture', dipFallback, dipFallback[0].url, true);
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
     attachSourceMenuHandlers();
     primeStaticSourceMenus();
+    startLocalClock();
+    document.addEventListener('keydown', (e) => {
+        if (e.key !== 'Escape') return;
+        const modal = document.getElementById('infoModal');
+        if (modal && modal.classList.contains('open')) closeInfo();
+    });
     // Load history first for chart
     const cached = await getCache();
     initChart(cached?.history);
@@ -2517,13 +3084,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     // Refresh from shared cache every minute (best-effort "no-cache" and consistent updates across devices).
-    setTimeout(() => { calculate(); setInterval(calculate, 60000); }, 500);
+    setTimeout(() => { calculate(true); scheduleCronSyncedRefresh(); }, 500);
 });
 
 // Track visibility changes (user comes back to tab)
 document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
         trackEvent('tab_return', 'engagement', 'user_returned');
+        // Catch up immediately and re-align to the cron window (sleeping laptops can miss timers).
+        calculate(true);
+        scheduleCronSyncedRefresh();
     }
 });
 
@@ -2545,7 +3115,7 @@ document.addEventListener('keydown', (e) => {
 
 async function forceRefresh() {
     showToast('🔄 Refreshing from cache...');
-    await calculate();
+    await calculate(true);
     showToast('✅ Updated');
 }
 

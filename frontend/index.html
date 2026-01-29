@@ -3,30 +3,47 @@
 
 <head>
 	    <meta charset="UTF-8">
-	    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+	    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes, viewport-fit=cover">
+        <meta name="deploy-version" content="__DEPLOY_VERSION__" />
 	    <!-- Best-effort no-cache (GitHub Pages cannot enforce headers) -->
-	    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
-	    <meta http-equiv="Pragma" content="no-cache" />
-	    <meta http-equiv="Expires" content="0" />
-	    <script>
-	        // If the HTML is cached, force a reload to the latest build (bust by query param).
-	        (function () {
-	            const BUILD_ID = "__BUILD_ID__";
-	            window.__BUILD_ID__ = BUILD_ID;
-	            try {
-	                fetch("version.json?cb=" + Date.now(), { cache: "no-store" })
-	                    .then(r => r.ok ? r.json() : null)
-	                    .then(v => {
-	                        const remote = v && (v.build || v.version);
-	                        if (!remote || remote === BUILD_ID) return;
-	                        const url = new URL(window.location.href);
+		    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+		    <meta http-equiv="Pragma" content="no-cache" />
+		    <meta http-equiv="Expires" content="0" />
+		    <script>
+		        // If the HTML is cached, force a reload to the latest build (bust by query param).
+		        (function () {
+                    const DEPLOY_VERSION = "__DEPLOY_VERSION__";
+		            const BUILD_ID = "__BUILD_ID__";
+		            const IS_STAMPED = BUILD_ID && BUILD_ID !== "__BUILD_ID__";
+                    const IS_DEPLOY_STAMPED = DEPLOY_VERSION && DEPLOY_VERSION !== "__DEPLOY_VERSION__";
+		            window.__BUILD_ID__ = IS_STAMPED ? BUILD_ID : "dev";
+                    window.__DEPLOY_VERSION__ = IS_DEPLOY_STAMPED ? DEPLOY_VERSION : "dev";
+		            // Cache-bust JS/CSS by deploy version (falls back to viewer's machine time for dev).
+		            window.__CACHE_BUST__ = IS_DEPLOY_STAMPED ? DEPLOY_VERSION : Date.now().toString();
+		            try {
+		                if (!IS_STAMPED) return;
+		                fetch("version.json?cb=" + Date.now(), { cache: "no-store" })
+		                    .then(r => r.ok ? r.json() : null)
+		                    .then(v => {
+		                        const remote = v && (v.build || v.version);
+		                        if (!remote || remote === BUILD_ID) return;
+		                        const url = new URL(window.location.href);
 	                        url.searchParams.set("v", remote);
 	                        window.location.replace(url.toString());
 	                    })
 	                    .catch(() => { });
 	            } catch (e) { }
-	        })();
-	    </script>
+		        })();
+		    </script>
+            <script>
+                document.addEventListener('DOMContentLoaded', function () {
+                    try {
+                        const v = (window.__DEPLOY_VERSION__ || '').toString();
+                        const el = document.getElementById('deployVersion');
+                        if (el) el.textContent = v && v !== 'dev' ? `v${v}` : 'dev';
+                    } catch (e) { }
+                });
+            </script>
 	    <title>BetterLife - War Risk Monitor</title>
 		<!-- Google Tag Manager -->
 	<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
@@ -43,10 +60,19 @@
         rel="stylesheet">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
     <!-- Google AdSense -->
-	    <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-8033751083492488"
-	        crossorigin="anonymous"></script>
-	    <link rel="stylesheet" href="styles.css?v=__BUILD_ID__">
-</head>
+		    <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-8033751083492488"
+		        crossorigin="anonymous"></script>
+		    <link rel="stylesheet" id="mainStyles" href="styles.css">
+		    <script>
+		        (function () {
+		            try {
+		                const v = (window.__CACHE_BUST__ || Date.now()).toString();
+		                const el = document.getElementById('mainStyles');
+		                if (el) el.href = "styles.css?v=" + encodeURIComponent(v);
+		            } catch (e) { }
+		        })();
+		    </script>
+	</head>
 
 <body>
 <!-- Google tag (gtag.js) -->
@@ -74,12 +100,15 @@
 
         <div class="timestamp-bar">
             <div style="display:flex;flex-direction:column;gap:2px;min-width:0">
-                <span>Updated at <span class="time" id="lastUpdate">--:--</span> <span class="tz" id="timezone"></span></span>
+		                <span>Updated at <span class="time" id="lastUpdate">--:--</span> <span class="tz" id="timezone"></span></span>
                 <span style="font-size: 11px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
                     Last data updated <span class="time" id="pyLastUpdate">---</span>
                 </span>
             </div>
-            <span style="color: var(--text-muted)" id="nextUpdate">Next update in 30m</span>
+            <div style="display:flex;flex-direction:column;align-items:flex-end;gap:2px;min-width:0">
+                <span style="color: var(--text-muted)" id="nextUpdate">Next update in 30m</span>
+                <span style="font-size: 11px; color: var(--text-muted); white-space: nowrap;" id="deployVersion"></span>
+            </div>
         </div>
 
         <div class="gauge-card">
@@ -272,7 +301,7 @@
                     <div class="signal-name">Market Odds <span class="signal-status live"
                             id="polymarketStatus">LIVE</span><button class="info-btn"
                             onclick="showInfo('polymarket')">i</button><a class="source-btn" id="polymarketSource"
-                            href="#" target="_blank" rel="noopener noreferrer"
+                            href="https://polymarket.com/search?_q=iran" target="_blank" rel="noopener noreferrer"
                             aria-label="Open Market Odds source" data-signal="polymarket">↗</a></div>
                     <div class="signal-detail" id="polymarketDetail">Loading...</div>
                 </div>
@@ -288,7 +317,7 @@
                     <div class="signal-name">Airspace NOTAMs <span class="signal-status live"
                             id="airspaceStatus">LIVE</span><button class="info-btn"
                             onclick="showInfo('airspace')">i</button><a class="source-btn" id="airspaceSource"
-                            href="#" target="_blank" rel="noopener noreferrer"
+                            href="https://notams.aim.faa.gov/notamSearch/nsapp.html#/" target="_blank" rel="noopener noreferrer"
                             aria-label="Open NOTAMs source" data-signal="airspace">↗</a></div>
                     <div class="signal-detail" id="airspaceDetail">Loading...</div>
                 </div>
@@ -341,7 +370,7 @@
         </div>
 
         <!-- Footer with share, telegram and about -->
-        <div style="display: flex; gap: 10px; margin-top: 8px;">
+	        <div class="footer-actions" style="display: flex; gap: 10px; margin-top: 8px;">
             <button class="show-more-btn"
                 style="flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px;"
                 onclick="shareSnapshot()">
@@ -363,8 +392,8 @@
     </div>
 
     <!-- Info Modal -->
-    <div class="modal-overlay" id="infoModal" onclick="closeInfo(event)">
-        <div class="modal" onclick="event.stopPropagation()">
+	    <div class="modal-overlay" id="infoModal" onclick="closeInfo(event)" aria-hidden="true">
+	        <div class="modal" role="dialog" aria-modal="true" onclick="event.stopPropagation()">
             <div class="modal-header">
                 <span class="modal-title" id="infoTitle">Signal Info</span>
                 <button class="modal-close" onclick="closeInfo()">&times;</button>
@@ -376,11 +405,21 @@
     <!-- Sources dropdown -->
     <div class="source-menu" id="sourceMenu" aria-hidden="true"></div>
 
-    <script src="app.js?v=__BUILD_ID__"></script>
-    <script>
-        (function () {
-            const subtitle = document.getElementById('trendSubtitle');
-            const fallback = document.getElementById('trendChartFallback');
+	    <script>
+	        // Load app.js with a per-device cache buster, but keep it parser-blocking so DOMContentLoaded isn't missed.
+	        (function () {
+	            try {
+	                const v = (window.__CACHE_BUST__ || Date.now()).toString();
+	                document.write('<script src="app.js?v=' + encodeURIComponent(v) + '"><\\/script>');
+	            } catch (e) {
+	                document.write('<script src="app.js"><\\/script>');
+	            }
+	        })();
+	    </script>
+	    <script>
+	        (function () {
+	            const subtitle = document.getElementById('trendSubtitle');
+	            const fallback = document.getElementById('trendChartFallback');
 
             function refresh() {
                 try {

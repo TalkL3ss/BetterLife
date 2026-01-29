@@ -1,4 +1,5 @@
 {
   "build": "__BUILD_ID__",
+  "deploy_version": "__DEPLOY_VERSION__",
   "generated_utc": "__BUILD_TIME__"
 }

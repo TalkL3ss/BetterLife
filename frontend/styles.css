@@ -43,6 +43,10 @@ body {
     overflow-x: hidden;
 }
 
+body.modal-open {
+    overflow: hidden;
+}
+
 .light-mode body {
     background: radial-gradient(1200px circle at 20% -10%, rgba(59, 130, 246, 0.16), transparent 55%), #e5e5ea;
 }
@@ -855,7 +859,7 @@ body {
     position: fixed;
     inset: 0;
     background: rgba(0, 0, 0, 0.85);
-    z-index: 100;
+    z-index: 400;
     align-items: center;
     justify-content: center;
     padding: 20px;
@@ -870,7 +874,7 @@ body {
     border-radius: 16px;
     padding: 24px;
     width: 100%;
-    max-width: 360px;
+    max-width: min(560px, 92vw);
     max-height: 80vh;
     display: flex;
     flex-direction: column;
@@ -937,7 +941,7 @@ body {
     }
 
     .app {
-        max-width: 440px;
+        max-width: min(720px, calc(100vw - 80px));
         width: 100%;
         border-radius: 32px;
         box-shadow: 0 20px 60px -20px rgba(0, 0, 0, 0.5);
@@ -960,5 +964,17 @@ body {
 
     .gauge-value {
         font-size: 56px;
+    }
+}
+
+@media (min-width: 1024px) {
+    .app {
+        max-width: min(640px, calc(100vw - 80px));
+        padding: 20px;
+        padding-bottom: 60px;
+    }
+
+    .chart-wrap {
+        height: 180px;
     }
 }

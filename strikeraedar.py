@@ -9,6 +9,7 @@ import time
 import re
 import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
+from urllib.parse import parse_qs, urlparse, unquote_plus
 
 # Try to import yfinance, else use fallback
 try:
@@ -22,6 +23,8 @@ except ImportError:
 TEHRAN_FIR = "OIIX"
 TEL_AVIV_FIR = "LLLL"
 NPOINT_ID = "fed9ee910656da13bf03" # Shared npoint ID
+PY_REFRESH_INTERVAL_MS = 30 * 60 * 1000  # Matches the GitHub Actions schedule (*/30)
+PY_REFRESH_GRACE_MS = 60 * 1000  # UI refresh grace after cache write
 
 # -----------------------------------------------------------------------------
 # Time helpers (UTC, stable across runners/clients)
@@ -49,13 +52,114 @@ RSS_FEEDS = [
 ]
 
 NEWS_CONTEXT_RE = re.compile(
-    r"\b(iran|tehran|irgc|israel|tel aviv|jerusalem|united states|u\.s\.|centcom|pentagon|hezbollah|hamas|houthi|syria|iraq|yemen|gulf|hormuz)\b",
+    r"\b(iran|tehran|irgc|israel|tel aviv|jerusalem|united states|u\.s\.|centcom|pentagon|hezbollah|houthi|syria|iraq|yemen|gulf|hormuz)\b",
     re.I,
 )
 NEWS_ALERT_RE = re.compile(
     r"\b(retaliat|strike|attack|escalat|threat|imminent|missile|drone|uav|nuclear|war|airstrike|bomb|intercept|invasion)\b",
     re.I,
 )
+NEWS_EXCLUDE_RE = re.compile(
+    r"\b(hamas|gaza)\b",
+    re.I,
+)
+
+DEFAULT_MIL_TANKER_CALLSIGN_QUERY_URL = (
+    "https://www.google.com/search?q=TEXACO+SHELL+MOOSE+TEAM+GOLD+NACHO+ARCO+tanker+callsign"
+)
+
+def parse_google_search_terms(url):
+    """
+    Extracts human-entered search terms from a Google search URL.
+
+    Note: This does NOT fetch/scrape Google; it only parses the URL's `q=` value.
+    """
+    try:
+        parsed = urlparse(str(url or "").strip())
+        qs = parse_qs(parsed.query or "")
+        q = (qs.get("q") or [""])[0]
+        q = unquote_plus(q or "").strip()
+        if not q:
+            return []
+
+        # Keep simple uppercase-ish tokens; drop generic words.
+        raw = [t.strip() for t in q.split() if t.strip()]
+        stop = {"tanker", "callsign", "call", "sign", "callsigns"}
+        out = []
+        for tok in raw:
+            t = re.sub(r"[^A-Za-z0-9_-]+", "", tok)
+            if not t:
+                continue
+            if t.lower() in stop:
+                continue
+            # Prefer ICAO-like airline/callsign blocks (3+ letters).
+            if len(t) >= 3 and re.search(r"[A-Za-z]{3,}", t):
+                out.append(t.upper())
+
+        # De-dup while preserving order.
+        seen = set()
+        deduped = []
+        for t in out:
+            if t in seen:
+                continue
+            seen.add(t)
+            deduped.append(t)
+        return deduped
+    except Exception:
+        return []
+
+def build_callsign_keyword_regex(terms):
+    safe = []
+    for t in (terms or []):
+        t = str(t or "").strip().upper()
+        if not t:
+            continue
+        if not re.fullmatch(r"[A-Z0-9_-]{3,}", t):
+            continue
+        safe.append(t)
+    if not safe:
+        return re.compile(r"(?!x)x")  # match nothing
+    return re.compile(r"\b(" + "|".join(re.escape(t) for t in safe) + r")\b", re.I)
+
+def _finite_float(x):
+    try:
+        if x is None:
+            return None
+        fx = float(x)
+        if fx != fx:  # NaN
+            return None
+        if fx == float("inf") or fx == float("-inf"):
+            return None
+        return fx
+    except Exception:
+        return None
+
+def _finite_int(x):
+    try:
+        if x is None:
+            return None
+        ix = int(x)
+        return ix
+    except Exception:
+        return None
+
+def build_opensky_links(icao24=None, callsign=None, ts=None):
+    icao24 = (icao24 or "").strip().lower()
+    callsign = (callsign or "").strip().upper()
+    t = int(ts or utc_now().timestamp())
+
+    links = {}
+    if icao24 and re.fullmatch(r"[0-9a-f]{6}", icao24):
+        # Explorer deep-link behavior depends on OpenSky's frontend; keep it best-effort.
+        links["explorer"] = f"https://opensky-network.org/network/explorer?icao24={icao24}"
+        # OpenSky REST endpoint (documented as /api/tracks/all) for a single aircraft at a given time.
+        links["track"] = f"https://opensky-network.org/api/tracks/all?icao24={icao24}&time={t}"
+    else:
+        links["explorer"] = "https://opensky-network.org/network/explorer"
+
+    if callsign:
+        links["callsign"] = callsign
+    return links
 
 def _http_get(url, timeout=15, extra_headers=None):
     # Use a browser-like UA to reduce the chance of being blocked by common bot filters/CDNs.
@@ -157,8 +261,14 @@ def build_news_intel():
     # Filter to relevant region context
     filtered = []
     for it in fresh:
-        text = f"{it.get('title','')} {it.get('description','')}".strip()
-        if not text:
+        title = (it.get("title") or "").strip()
+        desc = (it.get("description") or "").strip()
+        url = (it.get("url") or "").strip()
+        text = f"{title} {desc}".strip()
+        if not (text or url):
+            continue
+        # Exclude Gaza/Hamas even if it only appears in the article URL slug.
+        if (text and NEWS_EXCLUDE_RE.search(text)) or (url and NEWS_EXCLUDE_RE.search(url)):
             continue
         if NEWS_CONTEXT_RE.search(text):
             filtered.append(it)
@@ -206,26 +316,117 @@ def _parse_jsonish_list(v):
                 return []
     return []
 
+def _is_polymarket_no_match_title(title):
+    t = str(title or "").strip().lower()
+    if not t:
+        return True
+    # Historical strings from older builds
+    if "no active iran-related market matched" in t:
+        return True
+    if "no iran-related market matched" in t:
+        return True
+    return False
+
 def fetch_polymarket_signal():
     """
     Fetch a single Polymarket market odds snapshot (best-match heuristic).
 
-    Uses Polymarket's public Gamma API (no key). Always returns an object with
-    an `odds` number so the UI doesn't get stuck on "Awaiting data".
+    Uses Polymarket's public Gamma API (no key).
+    - Prefer the official search endpoint (public-search) to discover more relevant markets.
+    - Fall back to listing endpoints if search is unavailable.
+
+    Returns an object that can include multiple matched markets via `sources`.
     """
+    def _pm_search_url(q):
+        return f"https://polymarket.com/search?_q={requests.utils.quote(str(q or '').strip())}"
+
+    def _extract_yes_prob(m):
+        outcomes = _parse_jsonish_list(m.get("outcomes"))
+        prices = _parse_jsonish_list(m.get("outcomePrices") or m.get("outcome_prices"))
+        if not outcomes or not prices or len(outcomes) != len(prices):
+            return None
+        parsed_prices = []
+        for p in prices:
+            try:
+                parsed_prices.append(float(p))
+            except Exception:
+                parsed_prices.append(float("nan"))
+        if not any(p == p for p in parsed_prices):  # all NaN
+            return None
+
+        # Gamma sometimes returns prices in percent (0..100) rather than 0..1.
+        finite_prices = [p for p in parsed_prices if p == p]
+        if finite_prices:
+            mx = max(finite_prices)
+            mn = min(finite_prices)
+            if mx > 1.2 and 0 <= mn and mx <= 100:
+                parsed_prices = [p / 100.0 if (p == p) else p for p in parsed_prices]
+
+        yes_prob = None
+        no_prob = None
+        for o, p in zip(outcomes, parsed_prices):
+            if not (p == p):
+                continue
+            label = ""
+            if isinstance(o, dict):
+                label = str(o.get("name") or o.get("label") or o.get("outcome") or "").strip().lower()
+            else:
+                label = str(o).strip().lower()
+            if label == "yes":
+                yes_prob = p
+            elif label == "no":
+                no_prob = p
+
+        # If the market is a standard YES/NO binary and we only found NO, infer YES.
+        if yes_prob is None and no_prob is not None:
+            yes_prob = 1.0 - no_prob
+
+        # If we still can't identify a YES probability, skip the market (avoid accidentally using "NO").
+        if yes_prob is None:
+            return None
+
+        if yes_prob < 0 or yes_prob > 1.2:
+            return None
+        return max(0.0, min(1.0, yes_prob))
+
+    def _market_url_from(m):
+        slug = (m.get("slug") or "").strip()
+        return f"https://polymarket.com/market/{slug}" if slug else "https://polymarket.com/"
+
     try:
         candidates = []
+        any_ok_response = False
 
-        # Pull a small window of active markets and pick the best match by keywords + volume/liquidity.
-        # Gamma is sometimes behind aggressive caching/CDN rules; send browser-ish headers.
-        pm_headers = {
-            "Accept": "application/json",
-            "Referer": "https://polymarket.com/",
-            "Origin": "https://polymarket.com",
-        }
-        for offset in (0, 100, 200):
-            url = f"https://gamma-api.polymarket.com/markets?closed=false&active=true&limit=100&offset={offset}"
+        # Prefer the official search endpoint used by polymarket.com.
+        # Docs: https://docs.polymarket.com/#search
+        pm_headers = {"Accept": "application/json", "Referer": "https://polymarket.com/", "Origin": "https://polymarket.com"}
+        # Keep Polymarket discovery tightly focused on Iran as the primary search.
+        # (Avoid broad geopolitics queries that can bias results toward non-Iran headlines.)
+        search_queries = [
+            "iran",
+            "iran strike",
+            "iran attack",
+            "tehran",
+            "strait of hormuz",
+            "hormuz",
+        ]
 
+        seen_slugs = set()
+
+        def _score_market(q):
+            ql = q.lower()
+            relevance = 0
+            if any(k in ql for k in ("iran", "tehran")):
+                relevance += 2
+            if any(k in ql for k in ("strike", "attack", "airstrike", "war", "retaliat", "missile", "drone", "uav")):
+                relevance += 6
+            if any(k in ql for k in ("hormuz", "gulf of oman", "persian gulf", "shipping", "tanker")):
+                relevance += 2
+            return relevance
+
+        for q in search_queries:
+            # Keep params minimal for compatibility; filter client-side.
+            url = f"https://gamma-api.polymarket.com/public-search?q={requests.utils.quote(q)}&keep_closed_markets=0&limit_per_type=40&optimized=true"
             r = None
             for attempt in range(3):
                 try:
@@ -242,114 +443,202 @@ def fetch_polymarket_signal():
 
             if not r or r.status_code != 200:
                 continue
+            any_ok_response = True
 
             try:
-                data = r.json()
+                payload = r.json()
             except Exception:
                 continue
 
-            # API shape can vary: accept list or {data:[...]} / {markets:[...]}
-            if isinstance(data, dict):
-                data = data.get("data") or data.get("markets") or []
-            if not isinstance(data, list):
+            if not isinstance(payload, dict):
                 continue
 
-            for m in data:
-                if not isinstance(m, dict):
-                    continue
-                q = (m.get("question") or m.get("title") or "").strip()
-                ql = q.lower()
-                if not q:
-                    continue
-                if ("iran" not in ql) and ("tehran" not in ql):
-                    continue
-                relevance = 0
-                if any(k in ql for k in ("strike", "attack", "airstrike", "war", "retaliat", "missile", "drone", "uav")):
-                    relevance += 5
-                if any(k in ql for k in ("israel", "tel aviv", "jerusalem")):
-                    relevance += 3
-                if any(k in ql for k in ("u.s", "united states", "us", "pentagon", "centcom")):
-                    relevance += 2
-
-                outcomes = _parse_jsonish_list(m.get("outcomes"))
-                prices = _parse_jsonish_list(m.get("outcomePrices") or m.get("outcome_prices"))
-                if not outcomes or not prices or len(outcomes) != len(prices):
-                    continue
-
-                parsed_prices = []
-                for p in prices:
-                    try:
-                        parsed_prices.append(float(p))
-                    except Exception:
-                        parsed_prices.append(float("nan"))
-                if not any(p == p for p in parsed_prices):  # all NaN
-                    continue
-
-                yes_prob = None
-                for o, p in zip(outcomes, parsed_prices):
-                    if not (p == p):
+            # public-search can return both `markets` and `events` (with nested markets)
+            direct_markets = payload.get("markets")
+            if isinstance(direct_markets, list):
+                for m in direct_markets[:200]:
+                    if not isinstance(m, dict):
                         continue
-                    if str(o).strip().lower() == "yes":
-                        yes_prob = p
-                        break
-                if yes_prob is None:
-                    yes_prob = max([p for p in parsed_prices if p == p] or [0.0])
+                    if m.get("closed") is True:
+                        continue
+                    if m.get("active") is False:
+                        continue
+                    title = (m.get("question") or m.get("title") or "").strip()
+                    if not title:
+                        continue
+                    tl = title.lower()
+                    if ("iran" not in tl) and ("tehran" not in tl) and ("hormuz" not in tl):
+                        continue
+                    slug = (m.get("slug") or "").strip()
+                    if slug and slug in seen_slugs:
+                        continue
+                    if slug:
+                        seen_slugs.add(slug)
+                    yes_prob = _extract_yes_prob(m)
+                    if yes_prob is None:
+                        continue
+                    vol = 0.0
+                    liq = 0.0
+                    for k in ("volume24hr", "volume", "volumeUsd", "volume_usd", "volume24h"):
+                        try:
+                            if m.get(k) is not None:
+                                vol = float(m.get(k))
+                                break
+                        except Exception:
+                            pass
+                    for k in ("liquidity", "liquidityNum", "liquidityUsd", "liquidity_usd"):
+                        try:
+                            if m.get(k) is not None:
+                                liq = float(m.get(k))
+                                break
+                        except Exception:
+                            pass
+                    relevance = _score_market(title)
+                    market_url = _market_url_from(m)
+                    score = ((vol * 1.0) + (liq * 0.2) + 1.0) * (1.0 + 0.18 * relevance)
+                    candidates.append((score, yes_prob, title, market_url))
 
-                # Basic sanity clamp (Gamma prices are typically 0..1)
-                if yes_prob < 0 or yes_prob > 1.2:
+            events = payload.get("events")
+            if isinstance(events, list):
+                for ev in events[:80]:
+                    if not isinstance(ev, dict):
+                        continue
+                    markets = ev.get("markets") or []
+                    if not isinstance(markets, list):
+                        continue
+                    for m in markets:
+                        if not isinstance(m, dict):
+                            continue
+                        if m.get("closed") is True:
+                            continue
+                        if m.get("active") is False:
+                            continue
+                        title = (m.get("question") or m.get("title") or ev.get("title") or "").strip()
+                        if not title:
+                            continue
+                        tl = title.lower()
+                        if ("iran" not in tl) and ("tehran" not in tl) and ("hormuz" not in tl):
+                            continue
+                        slug = (m.get("slug") or "").strip()
+                        if slug and slug in seen_slugs:
+                            continue
+                        if slug:
+                            seen_slugs.add(slug)
+                        yes_prob = _extract_yes_prob(m)
+                        if yes_prob is None:
+                            continue
+                        vol = 0.0
+                        liq = 0.0
+                        for k in ("volume24hr", "volume", "volumeUsd", "volume_usd", "volume24h"):
+                            try:
+                                if m.get(k) is not None:
+                                    vol = float(m.get(k))
+                                    break
+                            except Exception:
+                                pass
+                        for k in ("liquidity", "liquidityNum", "liquidityUsd", "liquidity_usd"):
+                            try:
+                                if m.get(k) is not None:
+                                    liq = float(m.get(k))
+                                    break
+                            except Exception:
+                                pass
+                        relevance = _score_market(title)
+                        market_url = _market_url_from(m)
+                        score = ((vol * 1.0) + (liq * 0.2) + 1.0) * (1.0 + 0.18 * relevance)
+                        candidates.append((score, yes_prob, title, market_url))
+
+        # Fallback: listing endpoint (best-effort)
+        if not candidates:
+            for offset in (0, 100, 200):
+                url = f"https://gamma-api.polymarket.com/markets?closed=false&active=true&limit=100&offset={offset}"
+                r = None
+                for attempt in range(3):
+                    try:
+                        r = _http_get(url, timeout=25, extra_headers=pm_headers)
+                    except Exception:
+                        r = None
+                    if r is None:
+                        time.sleep(0.5 + attempt * 0.7)
+                        continue
+                    if r.status_code in (429, 500, 502, 503, 504):
+                        time.sleep(0.7 + attempt * 1.1)
+                        continue
+                    break
+                if not r or r.status_code != 200:
                     continue
-                yes_prob = max(0.0, min(1.0, yes_prob))
-
-                vol = 0.0
-                liq = 0.0
-                for k in ("volume24hr", "volume", "volumeUsd", "volume_usd", "volume24h"):
-                    try:
-                        if m.get(k) is not None:
-                            vol = float(m.get(k))
-                            break
-                    except Exception:
-                        pass
-                for k in ("liquidity", "liquidityNum", "liquidityUsd", "liquidity_usd"):
-                    try:
-                        if m.get(k) is not None:
-                            liq = float(m.get(k))
-                            break
-                    except Exception:
-                        pass
-
-                slug = (m.get("slug") or "").strip()
-                market_url = f"https://polymarket.com/market/{slug}" if slug else "https://polymarket.com/"
-
-                score = ((vol * 1.0) + (liq * 0.2)) * (1.0 + 0.12 * relevance)
-                candidates.append((score, yes_prob, q, market_url))
-
-            # If we already found a good set of candidates, stop paging.
-            if len(candidates) >= 10:
-                break
+                any_ok_response = True
+                try:
+                    data = r.json()
+                except Exception:
+                    continue
+                if isinstance(data, dict):
+                    data = data.get("data") or data.get("markets") or []
+                if not isinstance(data, list):
+                    continue
+                for m in data:
+                    if not isinstance(m, dict):
+                        continue
+                    title = (m.get("question") or m.get("title") or "").strip()
+                    if not title:
+                        continue
+                    tl = title.lower()
+                    if ("iran" not in tl) and ("tehran" not in tl) and ("hormuz" not in tl):
+                        continue
+                    yes_prob = _extract_yes_prob(m)
+                    if yes_prob is None:
+                        continue
+                    relevance = _score_market(title)
+                    market_url = _market_url_from(m)
+                    candidates.append((1.0 + 0.18 * relevance, yes_prob, title, market_url))
+                if len(candidates) >= 10:
+                    break
 
         if not candidates:
-            return {
-                "odds": 0,
-                "market": "No active Iran-related market matched",
-                "url": "https://polymarket.com/",
+            search_terms = ["iran", "iran strike", "iran attack", "tehran", "strait of hormuz", "hormuz"]
+            search_sources = [{"title": f"Search: {t}", "url": _pm_search_url(t)} for t in search_terms]
+            # If we couldn't reach the API at all (CDN blocks, endpoint changes, etc.),
+            # don't claim there are "no active markets" — provide a manual search link instead.
+            if not any_ok_response:
+                out = {
+                    "odds": None,
+                    "available": False,
+                    "market": "Polymarket search unavailable",
+                    "url": _pm_search_url("iran"),
+                    "timestamp": utc_iso(),
+                }
+                out["sources"] = search_sources
+                return out
+
+            out = {
+                "odds": None,
+                "available": False,
+                "market": "No Iran-related market matched (see search)",
+                "url": _pm_search_url("iran"),
                 "timestamp": utc_iso(),
             }
+            out["sources"] = search_sources
+            return out
 
         candidates.sort(key=lambda x: x[0], reverse=True)
-        _, prob, question, market_url = candidates[0]
-        odds = int(round(prob * 100))
+        top = candidates[:8]
+        _, prob, question, market_url = top[0]
+        odds = round(float(prob) * 100.0, 1)
 
         out = {
             "odds": odds,
+            "available": True,
             "market": question,
             "url": market_url,
             "timestamp": utc_iso(),
         }
-        out["sources"] = [{"title": out["market"], "url": out["url"]}]
+        # Include multiple matched market links so the UI can show more context.
+        out["sources"] = [{"title": q, "url": u} for _, _, q, u in top if q and u]
         return out
     except Exception:
         out = {
-            "odds": 0,
+            "odds": None,
+            "available": False,
             "market": "Polymarket unavailable",
             "url": "https://polymarket.com/",
             "timestamp": utc_iso(),
@@ -530,7 +819,12 @@ def build_military_signal():
 
         usaf_start = int("AE0000", 16)
         usaf_end = int("AE7FFF", 16)
-        tanker_re = re.compile(r"\b(TEXACO|SHELL|MOOSE|TEAM|GOLD|NACHO|ARCO)\b", re.I)
+        tanker_query_url = os.environ.get("MIL_TANKER_CALLSIGN_QUERY_URL") or DEFAULT_MIL_TANKER_CALLSIGN_QUERY_URL
+        tanker_terms = parse_google_search_terms(tanker_query_url)
+        tanker_re = build_callsign_keyword_regex(tanker_terms)
+
+        matches = []
+        now_ts = utc_now().timestamp()
 
         for ac in states:
             try:
@@ -547,6 +841,34 @@ def build_military_signal():
                 military_count += 1
                 if is_tanker:
                     tanker_like += 1
+
+                if len(matches) < 12:
+                    origin_country = ac[2] if len(ac) > 2 else None
+                    lon = _finite_float(ac[5] if len(ac) > 5 else None)
+                    lat = _finite_float(ac[6] if len(ac) > 6 else None)
+                    baro_alt_m = _finite_float(ac[7] if len(ac) > 7 else None)
+                    velocity_ms = _finite_float(ac[9] if len(ac) > 9 else None)
+                    heading_deg = _finite_float(ac[10] if len(ac) > 10 else None)
+                    vert_rate_ms = _finite_float(ac[11] if len(ac) > 11 else None)
+                    geo_alt_m = _finite_float(ac[13] if len(ac) > 13 else None)
+                    reason = "usaf_hex" if is_us_mil else "callsign_keyword"
+                    links = build_opensky_links(icao24=str(icao), callsign=callsign, ts=now_ts)
+                    matches.append(
+                        {
+                            "icao24": str(icao).lower(),
+                            "callsign": callsign,
+                            "origin_country": origin_country,
+                            "longitude": lon,
+                            "latitude": lat,
+                            "baro_altitude_m": baro_alt_m,
+                            "geo_altitude_m": geo_alt_m,
+                            "velocity_m_s": velocity_ms,
+                            "heading_deg": heading_deg,
+                            "vertical_rate_m_s": vert_rate_ms,
+                            "reason": reason,
+                            "links": links,
+                        }
+                    )
             except Exception:
                 continue
 
@@ -564,6 +886,9 @@ def build_military_signal():
             "military_count": int(military_count),
             "military_tanker_like": int(tanker_like),
             "militaryDetail": detail,
+            "military_region_api": url,
+            "military_callsign_terms": tanker_terms,
+            "military_matches": matches,
             "timestamp": utc_iso(),
         }
     except Exception:
@@ -859,8 +1184,8 @@ def check_airspace_warnings(aviation_count=None):
         "aviation_count": int(aviation_count) if isinstance(aviation_count, int) else aviation_count,
         "status": status,
         "fir_codes": [TEHRAN_FIR, TEL_AVIV_FIR],
-        "source_url": "https://notams.aim.faa.gov/notamSearch/",
-        "sources": [{"title": "FAA NOTAM Search", "url": "https://notams.aim.faa.gov/notamSearch/"}],
+        "source_url": "https://notams.aim.faa.gov/notamSearch/nsapp.html#/",
+        "sources": [{"title": "FAA NOTAM Search", "url": "https://notams.aim.faa.gov/notamSearch/nsapp.html#/"}],
         "timestamp": utc_iso(),
     }
 
@@ -1149,31 +1474,53 @@ def run_once(push=False, local_cache=False, local_cache_path="frontend/local_cac
 
     # Polymarket (fetch live via public API; fallback to existing)
     polymarket = fetch_polymarket_signal()
-    if isinstance(existing.get("polymarket"), dict) and (not isinstance(polymarket, dict) or polymarket.get("market") in ("Polymarket unavailable",)):
+    if isinstance(existing.get("polymarket"), dict) and (
+        (not isinstance(polymarket, dict))
+        or (polymarket.get("available") is False)
+        or (str(polymarket.get("market") or "").strip() in ("Polymarket unavailable", "Polymarket search unavailable", "No Iran-related market matched (see search)"))
+    ):
         # If live fetch fails, keep the last known market snapshot to avoid flapping to 0.
         polymarket = existing.get("polymarket")
     if not isinstance(polymarket, dict):
         polymarket = {
-            "odds": 0,
+            "odds": None,
+            "available": False,
             "market": "Polymarket unavailable",
             "url": "https://polymarket.com/",
             "timestamp": utc_iso(),
         }
-    odds = float(polymarket.get("odds") or 0)
-    # Sanity cap
-    if odds > 95:
-        odds = 0
-        polymarket["odds"] = 0
-    if odds < 0:
-        odds = 0
-        polymarket["odds"] = 0
+    # Odds can be None if the feed is unavailable; UI should display N/A rather than 0%.
+    odds = None
+    try:
+        raw_odds = polymarket.get("odds")
+        if raw_odds is not None:
+            odds = float(raw_odds)
+    except Exception:
+        odds = None
+
+    # Sanity cap (0..100 percent)
+    if odds is not None and (odds > 100 or odds < 0):
+        odds = None
+        polymarket["odds"] = None
+        polymarket["available"] = False
     if not polymarket.get("timestamp"):
         polymarket["timestamp"] = utc_iso()
     if not polymarket.get("url"):
-        polymarket["url"] = "https://polymarket.com/"
-    if not polymarket.get("market"):
-        polymarket["market"] = "No active Iran-related market matched"
-    polymarket_contrib = float(min(10, odds * 0.1)) if odds > 0 else 1.0
+        polymarket["url"] = "https://polymarket.com/search?_q=iran"
+    # Sanitize old cached "no match" titles so we never claim there are no active markets.
+    # If we can't auto-pick a market, always point users to the search page.
+    mkt_title = str(polymarket.get("market") or "").strip()
+    if _is_polymarket_no_match_title(mkt_title):
+        polymarket["market"] = "No Iran-related market matched (see search)"
+        polymarket["available"] = False
+        polymarket["odds"] = None
+        polymarket["url"] = "https://polymarket.com/search?_q=iran"
+        polymarket["sources"] = polymarket.get("sources") or [{"title": "Search: iran", "url": polymarket["url"]}]
+    elif not polymarket.get("market"):
+        polymarket["market"] = "Polymarket (Iran search)"
+    if "available" not in polymarket:
+        polymarket["available"] = odds is not None
+    polymarket_contrib = float(min(10, odds * 0.1)) if (odds is not None and odds > 0) else 1.0
 
     # Airspace contribution: airspace.score is a 0..50 raw severity score.
     # Convert to a 0..15 contribution (50 -> 15).
@@ -1335,18 +1682,33 @@ def run_once(push=False, local_cache=False, local_cache_path="frontend/local_cac
     _push_hist("maritime", round((maritime_contrib / 12) * 100))
     _push_hist("military", round((military_contrib / 15) * 100))
     _push_hist("markets", round((markets_contrib / 15) * 100))
-    _push_hist("polymarket", round(min(100, odds)))
+    pm_hist = 0
+    try:
+        if odds is not None:
+            pm_hist = int(round(max(0.0, min(100.0, float(odds)))))
+    except Exception:
+        pm_hist = 0
+    _push_hist("polymarket", pm_hist)
     _push_hist("airspace", round(min(100, float(airspace.get("score") or 0) * 2)))
     _push_hist("weather", round((weather_contrib / 5) * 100))
     _push_hist("gps", round((gps_contrib / 8) * 100))
     _push_hist("diplomats", round((dip_contrib / 12) * 100))
     _push_hist("pentagon", round(min(100, float(pentagon.get("score") or 0))))
 
+    # Provide an explicit "next update" timestamp for the frontend countdown.
+    # Use the 30-minute epoch-aligned schedule, then add a 1-minute grace window.
+    next_base_ms = ((now_ms // PY_REFRESH_INTERVAL_MS) + 1) * PY_REFRESH_INTERVAL_MS
+    next_update_ms = int(next_base_ms + PY_REFRESH_GRACE_MS)
+    next_update_dt = datetime.datetime.fromtimestamp(next_update_ms / 1000.0, tz=datetime.timezone.utc)
+
     # 6) Aggregate updates (single source of truth for the dashboard)
     unified_data = {
         "timestamp": now_ms,
         "strikeraedar_updated_ms": now_ms,
         "strikeraedar_updated": utc_iso(now),
+        # Unique field name (so it won't collide with other caches / apps).
+        "betterlife_next_update_ms": next_update_ms,
+        "betterlife_next_update": utc_iso(next_update_dt),
 
         "news_intel": news_intel,
         "news": news_contrib,
