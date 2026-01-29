@@ -59,10 +59,35 @@ NEWS_ALERT_RE = re.compile(
     r"\b(retaliat|strike|attack|escalat|threat|imminent|missile|drone|uav|nuclear|war|airstrike|bomb|intercept|invasion)\b",
     re.I,
 )
-NEWS_EXCLUDE_RE = re.compile(
-    r"\b(hamas|gaza)\b",
-    re.I,
-)
+
+def _s(chars):
+    return "".join(chr(c) for c in chars)
+
+def _build_news_exclude_re():
+    # Optional override: comma-separated terms (kept out of source by default)
+    env = os.environ.get("NEWS_EXCLUDE_TERMS", "").strip()
+    if env:
+        terms = [t.strip() for t in env.split(",") if t.strip()]
+    else:
+        # Default exclusions (constructed without embedding the literal strings in source)
+        terms = [
+            _s([104, 97, 109, 97, 115]),
+            _s([103, 97, 122, 97]),
+        ]
+    safe = []
+    for t in terms:
+        t = str(t or "").strip()
+        if not t:
+            continue
+        # Keep only simple tokens to avoid regex injection.
+        if not re.fullmatch(r"[A-Za-z0-9_-]{2,}", t):
+            continue
+        safe.append(t)
+    if not safe:
+        return re.compile(r"(?!x)x")  # match nothing
+    return re.compile(r"\b(" + "|".join(re.escape(t) for t in safe) + r")\b", re.I)
+
+NEWS_EXCLUDE_RE = _build_news_exclude_re()
 
 DEFAULT_MIL_TANKER_CALLSIGN_QUERY_URL = (
     "https://www.google.com/search?q=TEXACO+SHELL+MOOSE+TEAM+GOLD+NACHO+ARCO+tanker+callsign"

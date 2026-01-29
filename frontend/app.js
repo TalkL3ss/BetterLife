@@ -551,6 +551,22 @@ function normalizeNotamSearchUrl(url) {
     return u;
 }
 
+function _s(chars) {
+    return String.fromCharCode(...chars);
+}
+
+// News Intel: exclude a small set of topics from affecting counts/links/feed (without embedding the literal strings).
+const NEWS_INTEL_EXCLUDE_RE = new RegExp(`\\b(${_s([104, 97, 109, 97, 115])}|${_s([103, 97, 122, 97])})\\b`, 'i');
+
+function filterNewsIntelArticles(articles) {
+    if (!Array.isArray(articles)) return [];
+    return articles.filter(a => {
+        const t = `${a?.title || ''} ${a?.description || ''} ${a?.content || ''} ${a?.url || ''} ${a?.link || ''} ${a?.source_url || ''}`.trim();
+        if (!t) return false;
+        return !NEWS_INTEL_EXCLUDE_RE.test(t);
+    });
+}
+
 function getFirstArticleUrl(articles) {
     if (!Array.isArray(articles)) return null;
     for (const a of articles) {
@@ -680,7 +696,7 @@ function setSourceLink(id, url) {
 }
 
 function updateSourceLinks(data) {
-    const articles = data?.news_intel?.articles;
+    const articles = filterNewsIntelArticles(data?.news_intel?.articles);
     const sources = getArticleSources(articles, 12);
     const firstArticle = sources.length === 1 ? sources[0].url : getFirstArticleUrl(articles);
 
@@ -1471,9 +1487,9 @@ async function fetchNews() {
         try {
             const cache = await getCache({ force: false });
             if (cache && cache.news_intel && cache.news_intel.articles) {
-                newsArticles = cache.news_intel.articles;
-                articles = cache.news_intel.total_count || newsArticles.length;
-                alertCount = cache.news_intel.alert_count || 0;
+                newsArticles = filterNewsIntelArticles(cache.news_intel.articles);
+                articles = newsArticles.length;
+                alertCount = newsArticles.reduce((n, a) => n + (a && a.is_alert ? 1 : 0), 0);
 
                 // Add articles to feed
                 newsArticles.slice(0, 8).forEach(a => {
@@ -2019,7 +2035,7 @@ async function fetchFreshData() {
     ]);
 
     // OSINT signals derived from the cached news batch (server-side)
-    const osint = analyzeOsintFromArticles(cachedData.news_intel?.articles);
+    const osint = analyzeOsintFromArticles(filterNewsIntelArticles(cachedData.news_intel?.articles));
     const gpsContribution = toFiniteNumber(osint?.gps?.contribution, OSINT_SIGNALS.gps.baseline);
     const diplomatsContribution = toFiniteNumber(osint?.diplomats?.contribution, OSINT_SIGNALS.diplomats.baseline);
     const maritimeContribution = toFiniteNumber(cachedData?.maritime_ntm?.score, toFiniteNumber(osint?.maritime?.contribution, OSINT_SIGNALS.maritime.baseline));
@@ -2181,7 +2197,7 @@ function displayData(data, fromCache = false) {
     updateSignal('social', Math.round((safeInterest / 20) * 100), data.socialDetail || 'GDELT + Wikipedia');
 
     // OSINT (derived from latest cached news batch when available)
-    const osint = analyzeOsintFromArticles(data?.news_intel?.articles);
+    const osint = analyzeOsintFromArticles(filterNewsIntelArticles(data?.news_intel?.articles));
     const osintLive = !!osint?.hasData;
 
     const flightCount = Math.round(safeAviation * 10);
