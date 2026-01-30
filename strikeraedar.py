@@ -25,6 +25,7 @@ TEL_AVIV_FIR = "LLLL"
 NPOINT_ID = "fed9ee910656da13bf03" # Shared npoint ID
 PY_REFRESH_INTERVAL_MS = 30 * 60 * 1000  # Matches the GitHub Actions schedule (*/30)
 PY_REFRESH_GRACE_MS = 60 * 1000  # UI refresh grace after cache write
+POLYMARKET_LOOKAHEAD_HOURS = int(os.getenv("POLYMARKET_LOOKAHEAD_HOURS", "48") or 48)
 
 # -----------------------------------------------------------------------------
 # Time helpers (UTC, stable across runners/clients)
@@ -505,6 +506,109 @@ def fetch_polymarket_signal():
         return f"https://polymarket.com/market/{slug}" if slug else "https://polymarket.com/"
 
     try:
+        now = utc_now()
+        lookahead_hours = max(1, int(POLYMARKET_LOOKAHEAD_HOURS or 48))
+        lookahead_cutoff = now + datetime.timedelta(hours=lookahead_hours)
+
+        month_map = {
+            "jan": 1, "january": 1,
+            "feb": 2, "february": 2,
+            "mar": 3, "march": 3,
+            "apr": 4, "april": 4,
+            "may": 5,
+            "jun": 6, "june": 6,
+            "jul": 7, "july": 7,
+            "aug": 8, "august": 8,
+            "sep": 9, "sept": 9, "september": 9,
+            "oct": 10, "october": 10,
+            "nov": 11, "november": 11,
+            "dec": 12, "december": 12,
+        }
+
+        def _parse_dt_utc(v):
+            if v is None:
+                return None
+            if isinstance(v, (int, float)):
+                try:
+                    ts = float(v)
+                except Exception:
+                    return None
+                if ts > 1e12:
+                    ts /= 1000.0
+                if ts <= 0:
+                    return None
+                try:
+                    return datetime.datetime.fromtimestamp(ts, datetime.timezone.utc)
+                except Exception:
+                    return None
+            if isinstance(v, str):
+                s = v.strip()
+                if not s:
+                    return None
+                try:
+                    ss = s[:-1] + "+00:00" if s.endswith("Z") else s
+                    dt = datetime.datetime.fromisoformat(ss)
+                    if dt.tzinfo is None:
+                        return dt.replace(tzinfo=datetime.timezone.utc)
+                    return dt.astimezone(datetime.timezone.utc)
+                except Exception:
+                    pass
+                try:
+                    dt = parsedate_to_datetime(s)
+                    if dt.tzinfo is None:
+                        return dt.replace(tzinfo=datetime.timezone.utc)
+                    return dt.astimezone(datetime.timezone.utc)
+                except Exception:
+                    return None
+            return None
+
+        def _market_deadline_utc(m, title):
+            if isinstance(m, dict):
+                for k in (
+                    "endDate", "end_date",
+                    "endTime", "end_time",
+                    "closeTime", "close_time",
+                    "closeDate", "close_date",
+                    "expiresAt", "expires_at",
+                    "expirationTime", "expiration_time",
+                    "resolutionTime", "resolution_time",
+                    "resolveTime", "resolve_time",
+                ):
+                    dt = _parse_dt_utc(m.get(k))
+                    if dt is not None:
+                        return dt
+
+            t = str(title or "").strip()
+            if not t:
+                return None
+
+            m1 = re.search(
+                r"\bby\s+([A-Za-z]{3,9})\s+(\d{1,2})(?:st|nd|rd|th)?(?:,)?\s+(\d{4})\b",
+                t,
+                re.I,
+            )
+            if m1:
+                mon = month_map.get(m1.group(1).strip().lower())
+                if mon:
+                    try:
+                        day = int(m1.group(2))
+                        year = int(m1.group(3))
+                        return datetime.datetime(year, mon, day, 23, 59, 59, tzinfo=datetime.timezone.utc)
+                    except Exception:
+                        return None
+
+            m2 = re.search(r"\bby\s+(\d{4})-(\d{2})-(\d{2})\b", t)
+            if m2:
+                try:
+                    year = int(m2.group(1))
+                    mon = int(m2.group(2))
+                    day = int(m2.group(3))
+                    return datetime.datetime(year, mon, day, 23, 59, 59, tzinfo=datetime.timezone.utc)
+                except Exception:
+                    return None
+
+            return None
+
         candidates = []
         any_ok_response = False
 
@@ -597,6 +701,9 @@ def fetch_polymarket_signal():
                         continue
                     if not _title_is_relevant(title):
                         continue
+                    deadline_utc = _market_deadline_utc(m, title)
+                    if deadline_utc is None or deadline_utc < now or deadline_utc > lookahead_cutoff:
+                        continue
                     slug = (m.get("slug") or "").strip()
                     if slug and slug in seen_slugs:
                         continue
@@ -645,6 +752,9 @@ def fetch_polymarket_signal():
                         if not title:
                             continue
                         if not _title_is_relevant(title):
+                            continue
+                        deadline_utc = _market_deadline_utc(m, title)
+                        if deadline_utc is None or deadline_utc < now or deadline_utc > lookahead_cutoff:
                             continue
                         slug = (m.get("slug") or "").strip()
                         if slug and slug in seen_slugs:
@@ -713,6 +823,9 @@ def fetch_polymarket_signal():
                         continue
                     if not _title_is_relevant(title):
                         continue
+                    deadline_utc = _market_deadline_utc(m, title)
+                    if deadline_utc is None or deadline_utc < now or deadline_utc > lookahead_cutoff:
+                        continue
                     yes_prob = _extract_yes_prob(m)
                     if yes_prob is None:
                         continue
@@ -741,7 +854,7 @@ def fetch_polymarket_signal():
             out = {
                 "odds": None,
                 "available": False,
-                "market": "No auto-selected Polymarket market (see search)",
+                "market": f"No auto-selected Polymarket market in next {lookahead_hours}h (see search)",
                 "url": _pm_search_url("iran"),
                 "timestamp": utc_iso(),
             }
