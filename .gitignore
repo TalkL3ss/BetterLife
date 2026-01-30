@@ -25,6 +25,8 @@ yarn-error.log*
 # Generated runtime/cache artifacts
 strikeraedar_data.json
 strikeraedar_merged_payload.json
+betterlife_data.json
+betterlife_merged_payload.json
 frontend/local_cache.json
 
 # Local SSH key (do not commit)

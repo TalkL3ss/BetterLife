@@ -8,11 +8,7 @@ const API_KEYS = {
     aerodatabox: '3c52c3801dmshb70129bb162afaep1c0e03jsn4315c008bb36',
     // npoint.io for shared caching (all users see same data) - free, no rate limits
     npoint: 'fed9ee910656da13bf03',
-    // Telegram bot for alerts
-    telegram: '8407070441:AAEk7XWXyL5rMOVmGIkp_461bUJSw_6QaSc',
 };
-
-const TELEGRAM_CHANNEL = '@BetterLifeAlerts';
 
 // JSONbin configuration
 const CACHE_DURATION = 30 * 60 * 1000; // 30 minutes
@@ -20,7 +16,6 @@ const CACHE_DURATION = 30 * 60 * 1000; // 30 minutes
 const URL_PARAMS = new URLSearchParams(window.location.search);
 // Safety: never let random clients overwrite the shared cache unless explicitly enabled.
 const ALLOW_SHARED_CACHE_WRITE = URL_PARAMS.has('write');
-const ALLOW_TELEGRAM_ALERTS = URL_PARAMS.has('alerts');
 
 // Analytics helper (safe no-op if GA/gtag isn't available)
 function trackEvent(action, category = 'engagement', label = null, value = null, extra = null) {
@@ -353,12 +348,9 @@ let chart;
 let lastUpdateTime = null;
 let countdownInterval = null;
 let maxRiskSeen = 0;
-let localClockInterval = null;
-const SERVER_UPDATE_INTERVAL_MS = 30 * 60 * 1000; // .py schedule
+const AUTO_REFRESH_AFTER_MS = 31 * 60 * 1000; // refresh 31 minutes after last update timestamp
 
-// Auto-refresh: align refresh attempts to the GitHub Actions cron (*/30) and then poll
-// until the new cache timestamp is observed (accounts for workflow runtime).
-const CRON_SYNC_GRACE_MS = 60 * 1000; // start checking ~1 minute after cron start
+// Auto-refresh: start checking after the refresh target, then poll until a new cache timestamp is observed.
 const CRON_SYNC_POLL_INTERVAL_MS = 30 * 1000;
 const CRON_SYNC_MAX_POLL_MS = 12 * 60 * 1000;
 
@@ -478,25 +470,13 @@ function updateTimestamp(cacheTimestamp = null) {
         return;
     }
     lastUpdateTime = next;
-    startCountdown();
-}
-
-function startLocalClock() {
     const timeEl = document.getElementById('lastUpdate');
+    if (timeEl) {
+        timeEl.textContent = next.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+    }
     const tzEl = document.getElementById('timezone');
-    if (!timeEl) return;
-
-    if (localClockInterval) clearInterval(localClockInterval);
-
-    const tick = () => {
-        const now = new Date();
-        // Show the viewer's current local time (DST-aware).
-        timeEl.textContent = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
-        if (tzEl) tzEl.textContent = formatLocalGmtOffset(now);
-    };
-
-    tick();
-    localClockInterval = setInterval(tick, 1000);
+    if (tzEl) tzEl.textContent = formatLocalGmtOffset(next);
+    startCountdown();
 }
 
 function updatePyLastUpdate(data) {
@@ -527,34 +507,27 @@ function updatePyLastUpdate(data) {
         return null;
     };
 
-    // Prefer server-provided "next update" timestamps when available.
-    const nextUpdate =
-        parseToDate(data?.betterlife_next_update_ms) ||
-        parseToDate(data?.betterlife_next_update);
-    if (nextUpdate) state.serverNextUpdateMs = nextUpdate.getTime();
-
-    // Prefer the Python aggregator timestamp as the single source of truth (prevents other sub-feed
+    // Prefer the aggregator timestamp as the single source of truth (prevents other sub-feed
     // timestamps from shifting the countdown).
     const canonical =
-        parseToDate(data?.betterlife_last_update_ms) ||
-        parseToDate(data?.strikeraedar_updated_ms) ||
-        parseToDate(data?.betterlife_last_update) ||
-        parseToDate(data?.strikeraedar_updated);
+        parseToDate(data?.last_updated_ms) ||
+        parseToDate(data?.last_updated) ||
+        parseToDate(data?.timestamp);
     if (canonical) {
         const hh = canonical.getHours().toString().padStart(2, '0');
         const mm = canonical.getMinutes().toString().padStart(2, '0');
-        el.textContent = `${hh}:${mm}`;
+        const date = formatDate(canonical);
+        el.textContent = `${date} ${hh}:${mm}`;
+        state.serverNextUpdateMs = canonical.getTime() + AUTO_REFRESH_AFTER_MS;
         updateTimestamp(canonical.getTime());
         return;
     }
 
     const candidates = [
-        data?.strikeraedar_updated_ms,
         data?.airspace?.timestamp,
         data?.markets?.timestamp,
         data?.pentagon?.timestamp,
         data?.pentagon_updated,
-        data?.strikeraedar_updated,
         data?.timestamp,
     ];
 
@@ -1102,7 +1075,7 @@ function startCountdown() {
 }
 
 function computeNextCronStartMs(nowMs = Date.now()) {
-    return (Math.floor(nowMs / SERVER_UPDATE_INTERVAL_MS) + 1) * SERVER_UPDATE_INTERVAL_MS;
+    return nowMs + AUTO_REFRESH_AFTER_MS;
 }
 
 function getLastDataUpdateMs() {
@@ -1119,22 +1092,22 @@ function computeNextRefreshTargetMs(nowMs = Date.now()) {
         // Guard against bad/old timestamps that could otherwise loop for a long time.
         let iters = 0;
         while (next <= nowMs && iters < 2000) {
-            next += SERVER_UPDATE_INTERVAL_MS;
+            next += AUTO_REFRESH_AFTER_MS;
             iters += 1;
         }
         if (iters >= 2000) {
             // Fall back to the last-update based schedule.
             const lastMs = getLastDataUpdateMs();
             if (lastMs) {
-                let fallbackNext = lastMs + SERVER_UPDATE_INTERVAL_MS + CRON_SYNC_GRACE_MS;
+                let fallbackNext = lastMs + AUTO_REFRESH_AFTER_MS;
                 let j = 0;
                 while (fallbackNext <= nowMs && j < 2000) {
-                    fallbackNext += SERVER_UPDATE_INTERVAL_MS;
+                    fallbackNext += AUTO_REFRESH_AFTER_MS;
                     j += 1;
                 }
                 return fallbackNext;
             }
-            return computeNextCronStartMs(nowMs) + CRON_SYNC_GRACE_MS;
+            return computeNextCronStartMs(nowMs);
         }
         return next;
     }
@@ -1142,15 +1115,15 @@ function computeNextRefreshTargetMs(nowMs = Date.now()) {
     const lastMs = getLastDataUpdateMs();
 
     // If we have a concrete "last data updated" timestamp, base the next refresh countdown off it,
-    // plus a 1-minute grace to account for workflow runtime/propagation.
+    // plus the fixed refresh interval.
     if (lastMs) {
-        let next = lastMs + SERVER_UPDATE_INTERVAL_MS + CRON_SYNC_GRACE_MS;
-        while (next <= nowMs) next += SERVER_UPDATE_INTERVAL_MS;
+        let next = lastMs + AUTO_REFRESH_AFTER_MS;
+        while (next <= nowMs) next += AUTO_REFRESH_AFTER_MS;
         return next;
     }
 
-    // Fallback: align to cron boundaries when we don't yet know the last update time.
-    return computeNextCronStartMs(nowMs) + CRON_SYNC_GRACE_MS;
+    // Fallback: schedule relative to "now" when we don't yet know the last update time.
+    return computeNextCronStartMs(nowMs);
 }
 
 function stopCronSyncPoll() {
@@ -1931,14 +1904,14 @@ async function fetchMilitaryTrackers() {
 }
 
 // SIGNAL 4: AIRSPACE NOTAMs (Max 15%)
-// Fetched server-side by strikeraedar.py
+// Fetched server-side by the aggregator (cached)
 async function fetchAirspace() {
     setStatus('airspaceStatus', true);
     return 10; // Baseline - real value comes from cache
 }
 
 // SIGNAL 5: STOCK MARKETS (Max 15%)
-// Fetched server-side by strikeraedar.py
+// Fetched server-side by the aggregator (cached)
 async function fetchMarkets() {
     setStatus('marketsStatus', true);
     return 10; // Baseline - real value comes from cache
@@ -2282,7 +2255,7 @@ async function fetchFreshData() {
 
 // Display data on the dashboard
 function displayData(data, fromCache = false) {
-    state.cacheSeedMs = toFiniteNumber(data?.strikeraedar_updated_ms, toFiniteNumber(data?.timestamp, toFiniteNumber(state.cacheSeedMs, Date.now())));
+    state.cacheSeedMs = toFiniteNumber(data?.last_updated_ms, toFiniteNumber(data?.timestamp, toFiniteNumber(state.cacheSeedMs, Date.now())));
 
     // Defensive parsing: cache can be partially populated (or overwritten) and must not produce NaN UI.
     let safeNews = applyJitter(toFiniteNumber(data.news, 3), 0, 30, 1, 1);
@@ -2958,12 +2931,7 @@ function displayData(data, fromCache = false) {
     }
 
     // Update timestamp with the actual data timestamp
-    updateTimestamp(data?.strikeraedar_updated_ms || data?.timestamp);
-
-    // Send Telegram alert if risk crossed 60% threshold
-    if (!fromCache && ALLOW_TELEGRAM_ALERTS) {
-        sendTelegramAlert(projectedTotal, prevRisk);
-    }
+    updateTimestamp(data?.last_updated_ms || data?.timestamp);
 
     if (projectedTotal > maxRiskSeen) maxRiskSeen = projectedTotal;
 
@@ -2996,63 +2964,6 @@ function displayData(data, fromCache = false) {
     return projectedTotal;
 }
 
-// TELEGRAM ALERT - sends notification when risk crosses 60%
-let lastAlertSent = 0;
-const ALERT_COOLDOWN = 60 * 60 * 1000; // 1 hour between alerts
-
-async function sendTelegramAlert(risk, prevRisk) {
-    // Only send if crossing UP through 60% threshold
-    if (risk < 60 || prevRisk >= 60) return;
-
-    // Check cooldown
-    const now = Date.now();
-    if (now - lastAlertSent < ALERT_COOLDOWN) {
-        console.log('Alert cooldown active, skipping Telegram notification');
-        return;
-    }
-
-    const statusEmoji = risk >= 86 ? '🔴' : risk >= 61 ? '🟠' : '🟡';
-    const message = `${statusEmoji} *BetterLife Alert*
-
-📊 Projected Risk (8h): *${risk}%* (${getStatusText(risk)})
-⏱️ Window: Next 8 Hours
-
-📰 News: ${document.getElementById('newsValue').textContent}
-📈 Interest: ${document.getElementById('socialValue').textContent}
-✈️ Aviation: ${document.getElementById('flightValue').textContent}
-🎯 Military: ${document.getElementById('militaryValue')?.textContent || '--'}
-🛰️ GPS/GNSS: ${document.getElementById('gpsValue')?.textContent || '--'}
-🏛️ Diplomats: ${document.getElementById('diplomatsValue')?.textContent || '--'}
-📉 Markets: ${document.getElementById('marketsValue').textContent}
-🚫 Airspace: ${document.getElementById('airspaceValue').textContent}
-
-🔗 [View Dashboard](https://{PLACEHOLDER}.github.io/{placeholder})`;
-
-    try {
-        const res = await fetch(`https://api.telegram.org/bot${API_KEYS.telegram}/sendMessage`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                chat_id: TELEGRAM_CHANNEL,
-                text: message,
-                parse_mode: 'Markdown',
-                disable_web_page_preview: true
-            })
-        });
-
-        if (res.ok) {
-            lastAlertSent = now;
-            console.log('Telegram alert sent successfully');
-            addFeed('TELEGRAM', 'Alert sent to subscribers', false);
-        } else {
-            const err = await res.json();
-            console.log('Telegram error:', err.description);
-        }
-    } catch (e) {
-        console.log('Telegram send error:', e.message);
-    }
-}
-
 // Track last API call time to prevent excessive calls
 let lastAPICall = 0;
 const MIN_API_INTERVAL = 15 * 60 * 1000; // Minimum 15 minutes between API calls
@@ -3073,8 +2984,8 @@ async function calculate(force = false) {
 
     if (cached) {
         state.usingLocalCache = usedLocalFallback;
-        state.cacheSeedMs = toFiniteNumber(cached?.strikeraedar_updated_ms, toFiniteNumber(cached?.timestamp, Date.now()));
-        const cacheMs = toFiniteNumber(cached?.strikeraedar_updated_ms, toFiniteNumber(cached?.timestamp, 0));
+        state.cacheSeedMs = toFiniteNumber(cached?.last_updated_ms, toFiniteNumber(cached?.timestamp, Date.now()));
+        const cacheMs = toFiniteNumber(cached?.last_updated_ms, toFiniteNumber(cached?.timestamp, 0));
         const isNewData = cacheMs && cacheMs !== state.lastCacheSeenMs;
         if (cacheMs) state.lastCacheSeenMs = cacheMs;
 
@@ -3242,7 +3153,6 @@ function primeStaticSourceMenus() {
 document.addEventListener('DOMContentLoaded', async () => {
     attachSourceMenuHandlers();
     primeStaticSourceMenus();
-    startLocalClock();
     document.addEventListener('keydown', (e) => {
         if (e.key !== 'Escape') return;
         const modal = document.getElementById('infoModal');

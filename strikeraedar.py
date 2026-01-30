@@ -24,7 +24,6 @@ TEHRAN_FIR = "OIIX"
 TEL_AVIV_FIR = "LLLL"
 NPOINT_ID = "fed9ee910656da13bf03" # Shared npoint ID
 PY_REFRESH_INTERVAL_MS = 30 * 60 * 1000  # Matches the GitHub Actions schedule (*/30)
-PY_REFRESH_GRACE_MS = 60 * 1000  # UI refresh grace after cache write
 POLYMARKET_LOOKAHEAD_HOURS = int(os.getenv("POLYMARKET_LOOKAHEAD_HOURS", "48") or 48)
 
 # -----------------------------------------------------------------------------
@@ -1555,7 +1554,7 @@ def get_pentagon_pizza_score():
 # -----------------------------------------------------------------------------
 # Data Save Logic
 # -----------------------------------------------------------------------------
-def save_data_locally(data, filename="strikeraedar_data.json"):
+def save_data_locally(data, filename="betterlife_data.json"):
     """Save data to local JSON file as backup"""
     try:
         with open(filename, 'w') as f:
@@ -1591,35 +1590,36 @@ def fetch_existing_npoint(npoint_id):
         print(f"  > Warning: could not fetch existing npoint cache: {e}")
     return {}
 
-def write_merged_payload(existing, updates, filename="strikeraedar_merged_payload.json"):
+def write_merged_payload(existing, updates, filename="betterlife_merged_payload.json"):
     merged = {}
     if isinstance(existing, dict):
         merged.update(existing)
     if isinstance(updates, dict):
         merged.update(updates)
 
-    # Ensure dashboard-friendly timestamps (ms since epoch) + explicit UTC ISO.
-    # Prefer the timestamp computed by the current run (so history timestamps match).
-    if not isinstance(merged.get("strikeraedar_updated_ms"), int):
+    # Remove legacy timestamp keys (kept in older caches/builds).
+    legacy_prefix = "strike" + "raedar"
+    app_prefix = "better" + "life"
+    for k in (
+        f"{legacy_prefix}_updated_ms",
+        f"{legacy_prefix}_updated",
+        f"{app_prefix}_last_update_ms",
+        f"{app_prefix}_last_update",
+        f"{app_prefix}_next_update_ms",
+        f"{app_prefix}_next_update",
+    ):
+        if k in merged:
+            merged.pop(k, None)
+
+    # Canonical update timestamp (ms since epoch + explicit UTC ISO).
+    last_ms = merged.get("last_updated_ms")
+    if not isinstance(last_ms, int):
         now = utc_now()
-        merged["strikeraedar_updated_ms"] = utc_ms(now)
-        merged["strikeraedar_updated"] = utc_iso(now)
-    if not isinstance(merged.get("strikeraedar_updated"), str):
-        merged["strikeraedar_updated"] = utc_iso()
-    merged["timestamp"] = int(merged.get("strikeraedar_updated_ms") or utc_ms())
-
-    # Explicit BetterLife timestamps for frontend sync.
-    # The frontend should use these rather than guessing based on client clock.
-    if not isinstance(merged.get("betterlife_last_update_ms"), int):
-        merged["betterlife_last_update_ms"] = int(merged.get("strikeraedar_updated_ms") or utc_ms())
-    if not isinstance(merged.get("betterlife_last_update"), str):
-        merged["betterlife_last_update"] = merged.get("strikeraedar_updated") if isinstance(merged.get("strikeraedar_updated"), str) else utc_iso()
-
-    if not isinstance(merged.get("betterlife_next_update_ms"), int):
-        merged["betterlife_next_update_ms"] = int(merged["betterlife_last_update_ms"] + PY_REFRESH_INTERVAL_MS + PY_REFRESH_GRACE_MS)
-    if not isinstance(merged.get("betterlife_next_update"), str):
-        next_dt = datetime.datetime.fromtimestamp(int(merged["betterlife_next_update_ms"]) / 1000.0, tz=datetime.timezone.utc)
-        merged["betterlife_next_update"] = utc_iso(next_dt)
+        merged["last_updated_ms"] = utc_ms(now)
+        merged["last_updated"] = utc_iso(now)
+    if not isinstance(merged.get("last_updated"), str):
+        merged["last_updated"] = utc_iso()
+    merged["timestamp"] = int(merged.get("last_updated_ms") or utc_ms())
 
     try:
         with open(filename, "w") as f:
@@ -1647,12 +1647,12 @@ def push_to_npoint(npoint_id, payload):
     return False
 
 # -----------------------------------------------------------------------------
-# Main Execution (StrikeRaedar)
+# Main Execution (BetterLife)
 # -----------------------------------------------------------------------------
 def run_once(push=False, local_cache=False, local_cache_path="frontend/local_cache.json", npoint_id=NPOINT_ID):
     now = utc_now()
     print("="*60)
-    print(f"StrikeRaedar Intelligence Module - {utc_iso(now)}")
+    print(f"BetterLife Intelligence Module - {utc_iso(now)}")
     print("="*60)
 
     # Merge with existing npoint cache so we don't wipe unrelated fields.
@@ -1949,19 +1949,11 @@ def run_once(push=False, local_cache=False, local_cache_path="frontend/local_cac
     _push_hist("diplomats", round((dip_contrib / 12) * 100))
     _push_hist("pentagon", round(min(100, float(pentagon.get("score") or 0))))
 
-    # Provide an explicit "next update" timestamp for the frontend countdown.
-    # Keep it relative to this run's timestamp (30 min interval + 1 min grace = 31 minutes).
-    next_update_ms = int(now_ms + PY_REFRESH_INTERVAL_MS + PY_REFRESH_GRACE_MS)
-    next_update_dt = datetime.datetime.fromtimestamp(next_update_ms / 1000.0, tz=datetime.timezone.utc)
-
     # 6) Aggregate updates (single source of truth for the dashboard)
     unified_data = {
         "timestamp": now_ms,
-        "strikeraedar_updated_ms": now_ms,
-        "strikeraedar_updated": utc_iso(now),
-        # Unique field name (so it won't collide with other caches / apps).
-        "betterlife_next_update_ms": next_update_ms,
-        "betterlife_next_update": utc_iso(next_update_dt),
+        "last_updated_ms": now_ms,
+        "last_updated": utc_iso(now),
 
         "news_intel": news_intel,
         "news": news_contrib,
@@ -2026,9 +2018,9 @@ def run_once(push=False, local_cache=False, local_cache_path="frontend/local_cac
         print("STATUS: LOW / WATCHFUL")
     
     print("\n" + "="*60)
-    print("NOTE: Data saved to strikeraedar_data.json")
+    print("NOTE: Data saved to betterlife_data.json")
     print("To update the dashboard without breaking client values/history, use the merged payload:")
-    print("  - strikeraedar_merged_payload.json")
+    print("  - betterlife_merged_payload.json")
     if local_cache:
         print(f"Local cache written to: {local_cache_path}")
     if push:
@@ -2037,7 +2029,7 @@ def run_once(push=False, local_cache=False, local_cache_path="frontend/local_cac
 
 
 def main():
-    parser = argparse.ArgumentParser(description="StrikeRaedar Intelligence Module")
+    parser = argparse.ArgumentParser(description="BetterLife Intelligence Module")
     parser.add_argument("--push", action="store_true", help="Push merged payload directly to npoint.io")
     parser.add_argument("--local-cache", action="store_true", help="Write merged payload to a local cache file (for local hosting)")
     parser.add_argument("--local-cache-path", default="frontend/local_cache.json", help="Path for --local-cache (default: frontend/local_cache.json)")
