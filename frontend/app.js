@@ -388,6 +388,29 @@ function normalizeOddsPercent(raw) {
     return Math.max(0, Math.min(100, n));
 }
 
+function normalizeSignedOddsPercent(raw) {
+    // Used for displaying Polymarket as an *impact* signal: allow negative values (de-escalation markets).
+    const n = toFiniteNumber(raw, NaN);
+    if (!Number.isFinite(n)) return NaN;
+    return Math.max(-100, Math.min(100, n));
+}
+
+function isNoStrikeNext8HoursMarketTitle(title) {
+    const t = String(title || '').trim().toLowerCase();
+    if (!t) return false;
+    const mentions8h = /\b(next|within|in)\s*8\s*hour|\b8\s*hour|\beight\s*hour/.test(t);
+    if (!mentions8h) return false;
+    const mentionsStrike = /(strike|airstrike|attack|bomb|missile|drone|uav)/.test(t);
+    if (!mentionsStrike) return false;
+    // Look for negative framing: "no strike", "not strike", "won't strike", "will not attack", etc.
+    return (
+        /\bno\s+(?:\w+\s+){0,2}(strike|airstrike|attack|bomb|missile|drone|uav)\b/.test(t) ||
+        /\bwill\s+not\b/.test(t) ||
+        /\bwon['’]t\b/.test(t) ||
+        /\bnot\s+(?:\w+\s+){0,2}(strike|airstrike|attack|bomb|missile|drone|uav)\b/.test(t)
+    );
+}
+
 function computeTrendSlope(history, windowHours = 6) {
     if (!Array.isArray(history) || history.length < 2) return 0;
     const now = Date.now();
@@ -480,7 +503,50 @@ function updatePyLastUpdate(data) {
     const el = document.getElementById('pyLastUpdate');
     if (!el) return;
 
-    state.serverNextUpdateMs = toFiniteNumber(data?.betterlife_next_update_ms, 0);
+    const parseToDate = (ts) => {
+        if (!ts) return null;
+        if (typeof ts === 'number') {
+            // Heuristic: accept seconds (1e9..1e12) and milliseconds (>1e12).
+            const n = (ts > 0 && ts < 1e12 && ts > 1e9) ? ts * 1000 : ts;
+            const d = new Date(n);
+            return Number.isNaN(d.getTime()) ? null : d;
+        }
+        if (typeof ts === 'string') {
+            const s = ts.trim();
+            if (!s) return null;
+            // If it doesn't look like an ISO date, try treating it as an epoch number string.
+            if (!/[-T:]/.test(s)) {
+                const n = toFiniteNumber(s, NaN);
+                if (Number.isFinite(n)) return parseToDate(n);
+            }
+            const ms = Date.parse(s);
+            if (!Number.isFinite(ms)) return null;
+            const d = new Date(ms);
+            return Number.isNaN(d.getTime()) ? null : d;
+        }
+        return null;
+    };
+
+    // Prefer server-provided "next update" timestamps when available.
+    const nextUpdate =
+        parseToDate(data?.betterlife_next_update_ms) ||
+        parseToDate(data?.betterlife_next_update);
+    if (nextUpdate) state.serverNextUpdateMs = nextUpdate.getTime();
+
+    // Prefer the Python aggregator timestamp as the single source of truth (prevents other sub-feed
+    // timestamps from shifting the countdown).
+    const canonical =
+        parseToDate(data?.betterlife_last_update_ms) ||
+        parseToDate(data?.strikeraedar_updated_ms) ||
+        parseToDate(data?.betterlife_last_update) ||
+        parseToDate(data?.strikeraedar_updated);
+    if (canonical) {
+        const hh = canonical.getHours().toString().padStart(2, '0');
+        const mm = canonical.getMinutes().toString().padStart(2, '0');
+        el.textContent = `${hh}:${mm}`;
+        updateTimestamp(canonical.getTime());
+        return;
+    }
 
     const candidates = [
         data?.strikeraedar_updated_ms,
@@ -495,12 +561,7 @@ function updatePyLastUpdate(data) {
     let best = null;
     for (const ts of candidates) {
         if (!ts) continue;
-        let t = null;
-        if (typeof ts === 'number') t = new Date(ts);
-        else if (typeof ts === 'string') {
-            const ms = Date.parse(ts);
-            if (Number.isFinite(ms)) t = new Date(ms);
-        }
+        const t = parseToDate(ts);
         if (!t || Number.isNaN(t.getTime())) continue;
         if (!best || t.getTime() > best.getTime()) best = t;
     }
@@ -615,6 +676,22 @@ function buildGdeltDocHtmlUrl() {
     // Use HTML output so the link is human-readable in a browser (not raw JSON).
     const gdeltQuery = encodeURIComponent('iran attack OR iran strike OR iran military OR iran us');
     return `https://api.gdeltproject.org/api/v2/doc/doc?query=${gdeltQuery}&mode=artlist&maxrecords=50&format=html&timespan=24h`;
+}
+
+function buildGdeltGpsDocHtmlUrl() {
+    // Topic-specific OSINT query for GPS/GNSS interference reports (Iran/Israel context).
+    return 'https://api.gdeltproject.org/api/v2/doc/doc?query=(gps%20OR%20gnss)%20AND%20(spoof*%20OR%20jam*%20OR%20interference%20OR%20%22electronic%20warfare%22)%20AND(iran%20OR%20israel)&mode=artlist&maxrecords=50&format=html&timespan=8h';
+}
+
+function isStandaloneDisplayMode() {
+    try {
+        if (typeof window === 'undefined') return false;
+        if (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) return true;
+        // iOS Safari (legacy)
+        return window.navigator && window.navigator.standalone === true;
+    } catch (e) {
+        return false;
+    }
 }
 
 function buildWikipediaArticleUrl(article) {
@@ -804,9 +881,20 @@ function updateSourceLinks(data) {
     setSourceLinkOrMenu('airspaceSource', 'Airspace NOTAMs', [{ title: airTitle, url: airspaceUrl }], airspaceUrl, true);
 
     // GPS / DIPLOMATS (exact: matched articles)
-    const gpsSources = filterArticleSources(articles, (t) => /(gps|gnss)/i.test(t) && /(spoof|jamm|interference)/i.test(t), 8);
-    const gpsFallback = [{ title: 'GDELT Project', url: 'https://www.gdeltproject.org/' }];
-    setSourceLinkOrMenu('gpsSource', 'GPS/GNSS Interference', gpsSources.length ? gpsSources : gpsFallback, gpsFallback[0].url, true);
+    // Avoid false positives like "Jammu" matching "jamm".
+    const gpsSources = filterArticleSources(articles, (t) => {
+        const s = String(t || '');
+        const hasNavSignal = /\b(gps|gnss)\b/i.test(s);
+        const hasInterference =
+            /\bspoof(?:ing|ed)?\b/i.test(s) ||
+            /\bjam(?:ming|med|mer|mers)?\b/i.test(s) ||
+            /\binterference\b/i.test(s) ||
+            /(electronic warfare|\bew\b|signal interference)/i.test(s);
+        return hasNavSignal && hasInterference;
+    }, 8);
+    const gpsFallback = [{ title: 'GDELT (GPS/GNSS interference query)', url: buildGdeltGpsDocHtmlUrl() }];
+    const gpsList = [...gpsSources, ...gpsFallback];
+    setSourceLinkOrMenu('gpsSource', 'GPS/GNSS Interference', gpsList, gpsFallback[0].url, true);
 
     const dipSources = filterArticleSources(articles, (t) => /(embassy|consulate|diplomat|diplomatic|ambassador)/i.test(t) && /(evacuat|ordered departure|withdraw|relocat|transfer|reassign|recalled|closed)/i.test(t), 8);
     const dipFallback = [{ title: 'U.S. State Department', url: 'https://www.state.gov/' }];
@@ -819,6 +907,9 @@ function setSourceLinkOrMenu(id, title, sources, fallbackUrl, forceMenuIfSingle 
 
     const list = Array.isArray(sources) ? sources.filter(s => safeExternalUrl(s?.url)) : [];
     const signalKey = el.dataset?.signal || id;
+    const preferSameTab = id === 'gpsSource';
+    const sameTab = preferSameTab || isStandaloneDisplayMode();
+    el.setAttribute('target', sameTab ? '_self' : '_blank');
 
     if (list.length <= 1 && !forceMenuIfSingle) {
         if (list.length === 1) {
@@ -891,6 +982,18 @@ function openSourceMenu(anchorEl, title, sources) {
     header.className = 'source-menu-title';
     const headerText = document.createElement('span');
     headerText.textContent = title || 'Sources';
+
+    // If available, show the live signal value/detail in the header for quick context.
+    try {
+        const signal = anchorEl?.dataset?.signal;
+        if (signal === 'gps') {
+            const v = document.getElementById('gpsValue')?.textContent || '';
+            const d = document.getElementById('gpsDetail')?.textContent || '';
+            const extra = [String(v).trim(), String(d).trim()].filter(Boolean).join(' · ');
+            if (extra) headerText.textContent = `${headerText.textContent} — ${extra}`;
+        }
+    } catch (e) { }
+
     const closeBtn = document.createElement('button');
     closeBtn.className = 'source-menu-close';
     closeBtn.type = 'button';
@@ -934,7 +1037,8 @@ function openSourceMenu(anchorEl, title, sources) {
 
         const open = document.createElement('a');
         open.href = url;
-        open.target = '_blank';
+        // In standalone mobile/PWA mode, opening a new tab/window is often blocked/ignored.
+        open.target = isStandaloneDisplayMode() ? '_self' : '_blank';
         open.rel = 'noopener noreferrer';
         open.style.textDecoration = 'none';
         open.style.color = 'inherit';
@@ -1012,7 +1116,26 @@ function computeNextRefreshTargetMs(nowMs = Date.now()) {
     const serverNextMs = toFiniteNumber(state.serverNextUpdateMs, 0);
     if (serverNextMs) {
         let next = serverNextMs;
-        while (next <= nowMs) next += SERVER_UPDATE_INTERVAL_MS;
+        // Guard against bad/old timestamps that could otherwise loop for a long time.
+        let iters = 0;
+        while (next <= nowMs && iters < 2000) {
+            next += SERVER_UPDATE_INTERVAL_MS;
+            iters += 1;
+        }
+        if (iters >= 2000) {
+            // Fall back to the last-update based schedule.
+            const lastMs = getLastDataUpdateMs();
+            if (lastMs) {
+                let fallbackNext = lastMs + SERVER_UPDATE_INTERVAL_MS + CRON_SYNC_GRACE_MS;
+                let j = 0;
+                while (fallbackNext <= nowMs && j < 2000) {
+                    fallbackNext += SERVER_UPDATE_INTERVAL_MS;
+                    j += 1;
+                }
+                return fallbackNext;
+            }
+            return computeNextCronStartMs(nowMs) + CRON_SYNC_GRACE_MS;
+        }
         return next;
     }
 
@@ -1120,8 +1243,19 @@ function updateSignal(name, value, detail, options = {}) {
         if (value === null || value === undefined || isBadNumber) {
             valEl.textContent = '—';
             valEl.style.color = 'var(--text-muted)';
-            // Keep sparkline stable but non-alarming.
-            updateSparkline(name, null, '#666', { append: false });
+            // Keep sparkline stable but non-alarming. For Polymarket, avoid showing a synthetic sparkline
+            // when we don't have any real odds history yet (it looks like a real signal).
+            if (name === 'polymarket') {
+                const hist = Array.isArray(state.signalHistory?.[name]) ? state.signalHistory[name] : [];
+                const container = document.getElementById(`${name}Sparkline`);
+                if (container && hist.length === 0) {
+                    container.innerHTML = '';
+                } else {
+                    updateSparkline(name, null, '#666', { append: false });
+                }
+            } else {
+                updateSparkline(name, null, '#666', { append: false });
+            }
             if (detailEl) detailEl.textContent = detail || 'Unavailable';
             return;
         }
@@ -1149,11 +1283,11 @@ function updateSignal(name, value, detail, options = {}) {
             const jitterVal = Math.floor(seededRandom(seed, signalIndex) * 5) - 2;
             displayValue = Math.max(0, Math.min(100, displayValue + jitterVal));
         } else {
-            // Preserve decimal odds for Polymarket so very small values don't collapse to "0%".
-            const n = normalizeOddsPercent(value);
+            // Preserve decimals and allow negative display for de-escalation markets.
+            const n = normalizeSignedOddsPercent(value);
             displayValue = Number.isFinite(n) ? n : 0;
         }
-        const colorClass = getColor(displayValue);
+        const colorClass = displayValue < 0 ? 'green' : getColor(displayValue);
         if (name === 'polymarket' && displayValue > 0 && displayValue < 1) {
             valEl.textContent = '<1%';
         } else if (name === 'polymarket' && !Number.isInteger(displayValue)) {
@@ -1163,8 +1297,9 @@ function updateSignal(name, value, detail, options = {}) {
         }
         valEl.style.color = `var(--${colorClass})`;
         // Update sparkline with color based on value
-        const sparkColor = getSparklineColor(displayValue);
-        updateSparkline(name, displayValue, sparkColor, { append: appendSparkline !== false });
+        const sparkValue = name === 'polymarket' ? Math.abs(displayValue) : displayValue;
+        const sparkColor = (name === 'polymarket' && displayValue < 0) ? '#22c55e' : getSparklineColor(sparkValue);
+        updateSparkline(name, sparkValue, sparkColor, { append: appendSparkline !== false });
     }
     if (detailEl) detailEl.textContent = detail;
 }
@@ -1241,23 +1376,36 @@ function toggleFeed() {
 }
 
 function attachSourceMenuHandlers() {
-    // Data signals source buttons (multi-source)
-    document.addEventListener('click', (e) => {
-        const a = e.target?.closest?.('a.source-btn.multi');
+    let lastSourceMenuOpenMs = 0;
+    const openMenuFromEvent = (e) => {
+        const now = Date.now();
+        if (e?.type === 'click' && now - lastSourceMenuOpenMs < 650) return; // avoid double-open after touch
+
+        const t = (e && e.target && e.target.nodeType === 3) ? e.target.parentElement : e.target; // handle Text nodes (mobile Safari)
+        const a = t?.closest?.('a.source-btn.multi');
         if (!a) return;
+
         e.preventDefault();
+        lastSourceMenuOpenMs = now;
+
         const key = a.dataset?.signal || a.id;
         const sources = state.sourceLists?.[key] || [];
         const title = a.dataset?.menuTitle || 'Sources';
         openSourceMenu(a, title, sources);
-    });
+    };
+
+    // Data signals source buttons (multi-source)
+    document.addEventListener('click', openMenuFromEvent);
+    // iOS/standalone webviews can be flaky with `_blank`; ensure taps still open the menu.
+    document.addEventListener('touchend', openMenuFromEvent, { passive: false });
 
     // Close menu on outside click / ESC
     document.addEventListener('click', (e) => {
         const menu = document.getElementById('sourceMenu');
         if (!menu || !menu.classList.contains('open')) return;
-        if (e.target?.closest?.('#sourceMenu')) return;
-        if (e.target?.closest?.('a.source-btn.multi')) return;
+        const t = (e && e.target && e.target.nodeType === 3) ? e.target.parentElement : e.target; // handle Text nodes (mobile Safari)
+        if (t?.closest?.('#sourceMenu')) return;
+        if (t?.closest?.('a.source-btn.multi')) return;
         closeSourceMenu();
     });
 
@@ -2201,7 +2349,7 @@ function displayData(data, fromCache = false) {
     const osintLive = !!osint?.hasData;
 
     const flightCount = Math.round(safeAviation * 10);
-    const flightDetail = (data.flightDetail && !data.flightDetail.includes('Scanning') && !data.flightDetail.includes('Loading')) ? data.flightDetail : `${flightCount} aircraft over Iran`;
+    const flightDetail = (data.flightDetail && !data.flightDetail.includes('Scanning') && !data.flightDetail.includes('Loading') && !data.flightDetail.includes('Awaiting')) ? data.flightDetail : `${flightCount} aircraft over Iran`;
     updateSignal('flight', Math.round((safeAviation / 15) * 100), flightDetail);
     setIocFromScore('flight', Math.round((safeAviation / 15) * 100), 55, 75);
 
@@ -2346,6 +2494,7 @@ function displayData(data, fromCache = false) {
 
     // Polymarket odds signal (from cached data updated by GitHub Actions)
     let polymarketOdds = 0;
+    let polymarketStrikeOddsForIoc = 0;
     let polymarketContribution = 1; // baseline
     if (data.polymarket && (data.polymarket.odds !== undefined || data.polymarket.available === false || data.polymarket.market)) {
         const marketTitleRaw = String(data.polymarket.market || '').trim();
@@ -2369,13 +2518,15 @@ function displayData(data, fromCache = false) {
             // If we have a last-known good odds snapshot, display it as stale rather than a blank.
             const last = state.lastKnown?.polymarket;
             const lastOdds = normalizeOddsPercent(last?.odds);
-            const fallbackOdds = Number.isFinite(lastOdds) ? lastOdds : (Number.isFinite(parsedOdds) && parsedOdds > 0 ? parsedOdds : NaN);
+            const fallbackOdds = (Number.isFinite(lastOdds) && lastOdds > 0)
+                ? lastOdds
+                : (Number.isFinite(parsedOdds) && parsedOdds > 0 ? parsedOdds : NaN);
             polymarketContribution = 1;
             if (Number.isFinite(fallbackOdds)) {
                 polymarketOdds = Math.min(100, Math.max(0, fallbackOdds));
                 updateSignal('polymarket', polymarketOdds, `${polymarketOdds}% odds (stale)`, { appendSparkline: false });
                 setSignalMuted('polymarket');
-                updateSparkline('polymarket', null, '#666', { append: false, neutralValue: polymarketOdds });
+                updateSparkline('polymarket', null, getSparklineColor(polymarketOdds), { append: false, neutralValue: polymarketOdds });
                 setStatus('polymarketStatus', false);
             } else {
                 updateSignal('polymarket', null, marketTitle || 'Unavailable');
@@ -2384,9 +2535,13 @@ function displayData(data, fromCache = false) {
         } else {
             // Safety: odds should be 0-100, cap at 100
             polymarketOdds = Math.min(100, Math.max(0, parsedOdds));
-            polymarketContribution = Math.min(10, polymarketOdds * 0.1);
+            const isNoStrike8h = isNoStrikeNext8HoursMarketTitle(marketTitle);
+            polymarketStrikeOddsForIoc = isNoStrike8h ? (100 - polymarketOdds) : polymarketOdds;
+            polymarketContribution = (isNoStrike8h ? -1 : 1) * Math.min(10, polymarketOdds * 0.1);
             const extraText = pmExtra > 0 ? ` (+${pmExtra} markets)` : '';
-            updateSignal('polymarket', polymarketOdds, `${polymarketOdds}% odds${extraText}`);
+            const detailPrefix = isNoStrike8h ? 'NO strike next 8h: ' : '';
+            const signedDisplay = isNoStrike8h ? -polymarketOdds : polymarketOdds;
+            updateSignal('polymarket', signedDisplay, `${detailPrefix}${polymarketOdds}% odds${extraText}`);
             setStatus('polymarketStatus', true);
             state.lastKnown.polymarket = {
                 odds: polymarketOdds,
@@ -2407,13 +2562,15 @@ function displayData(data, fromCache = false) {
         const lastOdds = normalizeOddsPercent(last?.odds);
         const hist = Array.isArray(state.signalHistory?.polymarket) ? state.signalHistory.polymarket : [];
         const histLast = hist.length ? toFiniteNumber(hist[hist.length - 1], NaN) : NaN;
-        const fallbackOdds = Number.isFinite(lastOdds) ? lastOdds : (Number.isFinite(histLast) && histLast > 0 ? histLast : NaN);
+        const fallbackOdds = (Number.isFinite(lastOdds) && lastOdds > 0)
+            ? lastOdds
+            : (Number.isFinite(histLast) && histLast > 0 ? histLast : NaN);
         polymarketContribution = 1;
         if (Number.isFinite(fallbackOdds)) {
             polymarketOdds = Math.min(100, Math.max(0, fallbackOdds));
             updateSignal('polymarket', polymarketOdds, `${polymarketOdds}% odds (stale)`, { appendSparkline: false });
             setSignalMuted('polymarket');
-            updateSparkline('polymarket', null, '#666', { append: false, neutralValue: polymarketOdds });
+            updateSparkline('polymarket', null, getSparklineColor(polymarketOdds), { append: false, neutralValue: polymarketOdds });
         } else {
             updateSignal('polymarket', null, 'Awaiting data...');
         }
@@ -2421,7 +2578,9 @@ function displayData(data, fromCache = false) {
     }
     // Store for total calculation
     const safePolymarketCalc = polymarketContribution;
-    setIocFromScore('polymarket', polymarketOdds, 30, 55);
+    // IOC highlighting should follow strike probability, not "no-strike" markets.
+    const iocOdds = Number.isFinite(polymarketStrikeOddsForIoc) && polymarketStrikeOddsForIoc > 0 ? polymarketStrikeOddsForIoc : polymarketOdds;
+    setIocFromScore('polymarket', iocOdds, 30, 55);
 
     // AIRSPACE (Server-side)
     let airspaceContribution = 0;
@@ -2571,8 +2730,12 @@ function displayData(data, fromCache = false) {
     if (newsAlertCountForIoc >= 2) iocScore += 2;
     else if (newsAlertCountForIoc >= 1) iocScore += 1;
 
-    if (polymarketOdds >= 55) iocScore += 2;
-    else if (polymarketOdds >= 30) iocScore += 1;
+    // Use strike probability for IOC scoring (a "NO strike next 8h" market should reduce IOC, not raise it).
+    const polymarketIocOdds = Number.isFinite(polymarketStrikeOddsForIoc) && polymarketStrikeOddsForIoc > 0
+        ? polymarketStrikeOddsForIoc
+        : polymarketOdds;
+    if (polymarketIocOdds >= 55) iocScore += 2;
+    else if (polymarketIocOdds >= 30) iocScore += 1;
 
     if (airspaceScoreForIoc >= 40) iocScore += 2;
     else if (airspaceScoreForIoc >= 20) iocScore += 1;
@@ -3069,7 +3232,7 @@ function primeStaticSourceMenus() {
     setSourceLinkOrMenu('polymarketSource', 'Market Odds (Polymarket)', [{ title: 'Polymarket', url: SOURCE_URLS.polymarket }], SOURCE_URLS.polymarket, true);
     setSourceLinkOrMenu('airspaceSource', 'Airspace NOTAMs', [{ title: 'FAA NOTAM Search', url: SOURCE_URLS.airspace }], SOURCE_URLS.airspace, true);
 
-    const gpsFallback = [{ title: 'GDELT Project', url: 'https://www.gdeltproject.org/' }];
+    const gpsFallback = [{ title: 'GDELT (GPS/GNSS interference query)', url: buildGdeltGpsDocHtmlUrl() }];
     setSourceLinkOrMenu('gpsSource', 'GPS/GNSS Interference', gpsFallback, gpsFallback[0].url, true);
 
     const dipFallback = [{ title: 'U.S. State Department', url: 'https://www.state.gov/' }];

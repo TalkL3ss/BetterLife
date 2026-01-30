@@ -492,6 +492,21 @@ body.modal-open {
     display: flex;
     align-items: center;
     gap: 6px;
+    min-width: 0;
+}
+
+.signal-name-text {
+    flex: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.signal-name .signal-status,
+.signal-name .info-btn,
+.signal-name .source-btn {
+    flex-shrink: 0;
 }
 
 .signal-detail {
@@ -551,6 +566,7 @@ body.modal-open {
     align-items: center;
     justify-content: center;
     text-decoration: none;
+    touch-action: manipulation;
 }
 
 .source-btn:hover {

@@ -350,6 +350,8 @@ def _is_polymarket_no_match_title(title):
         return True
     if "no iran-related market matched" in t:
         return True
+    if "no auto-selected polymarket market" in t:
+        return True
     return False
 
 def fetch_polymarket_signal():
@@ -366,10 +368,94 @@ def fetch_polymarket_signal():
         return f"https://polymarket.com/search?_q={requests.utils.quote(str(q or '').strip())}"
 
     def _extract_yes_prob(m):
-        outcomes = _parse_jsonish_list(m.get("outcomes"))
-        prices = _parse_jsonish_list(m.get("outcomePrices") or m.get("outcome_prices"))
+        # Some Gamma payloads include a direct probability field; accept it when present.
+        for k in ("probability", "yesProbability", "yes_probability", "yesProb", "yes_prob"):
+            v = m.get(k)
+            if v is None:
+                continue
+            try:
+                n = float(v)
+            except Exception:
+                continue
+            if n > 1.2 and 0 <= n <= 100:
+                n = n / 100.0
+            if 0 <= n <= 1.2:
+                return max(0.0, min(1.0, n))
+
+        outcomes_raw = m.get("outcomes")
+        outcomes = outcomes_raw if isinstance(outcomes_raw, list) else _parse_jsonish_list(outcomes_raw)
+
+        prices_raw = m.get("outcomePrices") or m.get("outcome_prices")
+        prices = None
+
+        # Handle dict-based price maps (some variants return {"Yes": 0.3, "No": 0.7}).
+        if isinstance(prices_raw, dict):
+            if outcomes and all(str(k).strip().isdigit() for k in prices_raw.keys()):
+                # Index-keyed map: {"0": "0.3", "1": "0.7"} aligned with outcomes order.
+                tmp = [None] * len(outcomes)
+                for k, v in prices_raw.items():
+                    try:
+                        idx = int(str(k).strip())
+                    except Exception:
+                        continue
+                    if 0 <= idx < len(tmp):
+                        tmp[idx] = v
+                prices = tmp
+            else:
+                # Label-keyed map: {"Yes": 0.3, "No": 0.7}
+                yes_prob = None
+                no_prob = None
+                mapped = []
+                for k, v in prices_raw.items():
+                    try:
+                        p = float(v)
+                    except Exception:
+                        continue
+                    kk = str(k).strip().lower()
+                    mapped.append(p)
+                    if kk == "yes":
+                        yes_prob = p
+                    elif kk == "no":
+                        no_prob = p
+                # Normalize percent-like maps.
+                if mapped:
+                    mx = max(mapped)
+                    mn = min(mapped)
+                    if mx > 1.2 and 0 <= mn and mx <= 100:
+                        if yes_prob is not None:
+                            yes_prob /= 100.0
+                        if no_prob is not None:
+                            no_prob /= 100.0
+                if yes_prob is None and no_prob is not None:
+                    yes_prob = 1.0 - no_prob
+                if yes_prob is None:
+                    return None
+                if yes_prob < 0 or yes_prob > 1.2:
+                    return None
+                return max(0.0, min(1.0, yes_prob))
+        else:
+            prices = _parse_jsonish_list(prices_raw)
+
         if not outcomes or not prices or len(outcomes) != len(prices):
-            return None
+            # Some payloads embed outcome probabilities directly in the outcomes list.
+            if outcomes and all(isinstance(o, dict) for o in outcomes):
+                labels = []
+                parsed_prices = []
+                for o in outcomes:
+                    label = str(o.get("name") or o.get("label") or o.get("outcome") or "").strip().lower()
+                    pv = o.get("price") if ("price" in o) else o.get("probability")
+                    try:
+                        p = float(pv) if pv is not None else float("nan")
+                    except Exception:
+                        p = float("nan")
+                    labels.append(label)
+                    parsed_prices.append(p)
+                # Continue through the normal label matching below.
+                outcomes = labels
+                prices = parsed_prices
+            else:
+                return None
+
         parsed_prices = []
         for p in prices:
             try:
@@ -438,6 +524,20 @@ def fetch_polymarket_signal():
 
         seen_slugs = set()
 
+        def _title_is_relevant(title):
+            tl = str(title or "").strip().lower()
+            if not tl:
+                return False
+            # Primary Iran/Hormuz context.
+            if any(k in tl for k in ("iran", "tehran", "hormuz", "strait of hormuz")):
+                return True
+            # Secondary: Israel-related strike markets can be Iran escalation signals even when "Iran"
+            # is not explicitly in the question.
+            strike_terms = ("strike", "airstrike", "attack", "war", "retaliat", "missile", "drone", "uav", "bomb")
+            if ("israel" in tl or "us" in tl) and any(k in tl for k in strike_terms):
+                return True
+            return False
+
         def _score_market(q):
             ql = q.lower()
             relevance = 0
@@ -468,15 +568,19 @@ def fetch_polymarket_signal():
 
             if not r or r.status_code != 200:
                 continue
-            any_ok_response = True
 
             try:
                 payload = r.json()
             except Exception:
                 continue
 
-            if not isinstance(payload, dict):
+            if not isinstance(payload, (dict, list)):
                 continue
+            any_ok_response = True
+
+            # Some variants can return a top-level list; treat it as a list of markets.
+            if isinstance(payload, list):
+                payload = {"markets": payload}
 
             # public-search can return both `markets` and `events` (with nested markets)
             direct_markets = payload.get("markets")
@@ -491,8 +595,7 @@ def fetch_polymarket_signal():
                     title = (m.get("question") or m.get("title") or "").strip()
                     if not title:
                         continue
-                    tl = title.lower()
-                    if ("iran" not in tl) and ("tehran" not in tl) and ("hormuz" not in tl):
+                    if not _title_is_relevant(title):
                         continue
                     slug = (m.get("slug") or "").strip()
                     if slug and slug in seen_slugs:
@@ -541,8 +644,7 @@ def fetch_polymarket_signal():
                         title = (m.get("question") or m.get("title") or ev.get("title") or "").strip()
                         if not title:
                             continue
-                        tl = title.lower()
-                        if ("iran" not in tl) and ("tehran" not in tl) and ("hormuz" not in tl):
+                        if not _title_is_relevant(title):
                             continue
                         slug = (m.get("slug") or "").strip()
                         if slug and slug in seen_slugs:
@@ -592,11 +694,13 @@ def fetch_polymarket_signal():
                     break
                 if not r or r.status_code != 200:
                     continue
-                any_ok_response = True
                 try:
                     data = r.json()
                 except Exception:
                     continue
+                if not isinstance(data, (dict, list)):
+                    continue
+                any_ok_response = True
                 if isinstance(data, dict):
                     data = data.get("data") or data.get("markets") or []
                 if not isinstance(data, list):
@@ -607,8 +711,7 @@ def fetch_polymarket_signal():
                     title = (m.get("question") or m.get("title") or "").strip()
                     if not title:
                         continue
-                    tl = title.lower()
-                    if ("iran" not in tl) and ("tehran" not in tl) and ("hormuz" not in tl):
+                    if not _title_is_relevant(title):
                         continue
                     yes_prob = _extract_yes_prob(m)
                     if yes_prob is None:
@@ -638,7 +741,7 @@ def fetch_polymarket_signal():
             out = {
                 "odds": None,
                 "available": False,
-                "market": "No Iran-related market matched (see search)",
+                "market": "No auto-selected Polymarket market (see search)",
                 "url": _pm_search_url("iran"),
                 "timestamp": utc_iso(),
             }
@@ -1392,6 +1495,19 @@ def write_merged_payload(existing, updates, filename="strikeraedar_merged_payloa
         merged["strikeraedar_updated"] = utc_iso()
     merged["timestamp"] = int(merged.get("strikeraedar_updated_ms") or utc_ms())
 
+    # Explicit BetterLife timestamps for frontend sync.
+    # The frontend should use these rather than guessing based on client clock.
+    if not isinstance(merged.get("betterlife_last_update_ms"), int):
+        merged["betterlife_last_update_ms"] = int(merged.get("strikeraedar_updated_ms") or utc_ms())
+    if not isinstance(merged.get("betterlife_last_update"), str):
+        merged["betterlife_last_update"] = merged.get("strikeraedar_updated") if isinstance(merged.get("strikeraedar_updated"), str) else utc_iso()
+
+    if not isinstance(merged.get("betterlife_next_update_ms"), int):
+        merged["betterlife_next_update_ms"] = int(merged["betterlife_last_update_ms"] + PY_REFRESH_INTERVAL_MS + PY_REFRESH_GRACE_MS)
+    if not isinstance(merged.get("betterlife_next_update"), str):
+        next_dt = datetime.datetime.fromtimestamp(int(merged["betterlife_next_update_ms"]) / 1000.0, tz=datetime.timezone.utc)
+        merged["betterlife_next_update"] = utc_iso(next_dt)
+
     try:
         with open(filename, "w") as f:
             json.dump(merged, f, indent=2)
@@ -1721,9 +1837,8 @@ def run_once(push=False, local_cache=False, local_cache_path="frontend/local_cac
     _push_hist("pentagon", round(min(100, float(pentagon.get("score") or 0))))
 
     # Provide an explicit "next update" timestamp for the frontend countdown.
-    # Use the 30-minute epoch-aligned schedule, then add a 1-minute grace window.
-    next_base_ms = ((now_ms // PY_REFRESH_INTERVAL_MS) + 1) * PY_REFRESH_INTERVAL_MS
-    next_update_ms = int(next_base_ms + PY_REFRESH_GRACE_MS)
+    # Keep it relative to this run's timestamp (30 min interval + 1 min grace = 31 minutes).
+    next_update_ms = int(now_ms + PY_REFRESH_INTERVAL_MS + PY_REFRESH_GRACE_MS)
     next_update_dt = datetime.datetime.fromtimestamp(next_update_ms / 1000.0, tz=datetime.timezone.utc)
 
     # 6) Aggregate updates (single source of truth for the dashboard)
