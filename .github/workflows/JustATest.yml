@@ -1,4 +1,4 @@
-name: Update Remote Cached Signals
+name: JS-safe ping
 
 on:
   schedule:
@@ -6,9 +6,34 @@ on:
   workflow_dispatch:
 
 jobs:
-  update-cache:
+  ping:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Wget ping
-      run: wget -q -O /dev/null --timeout=120 --tries=3 --waitretry=5 "https://betterlife.wuaze.com/data.php?update=true&token=B3TT3RLIF3_UPDAT3_T0K3N" || true
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Playwright
+        run: |
+          npm init -y
+          npm install playwright
+          npx playwright install chromium --with-deps
+
+      - name: Hit endpoint with real browser
+        env:
+          TOKEN: B3TT3RLIF3_UPDAT3_T0K3N
+        run: |
+          node -e "
+          const { chromium } = require('playwright');
+          (async () => {
+            const browser = await chromium.launch();
+            const page = await browser.newPage();
+            await page.goto(
+              'https://betterlife.wuaze.com/data.php?update=true&token=' + process.env.TOKEN,
+              { waitUntil: 'networkidle', timeout: 120000 }
+            );
+            await browser.close();
+          })();
+          "
