@@ -11,4 +11,4 @@ jobs:
 
     steps:
       - name: Update Remote cache
-        run: curl "https://betterlife.wuaze.com/data.php?update=true&token=B3TT3RLIF3_UPDAT3_T0K3N"
+        run: --connect-timeout 60 --max-time 120 --retry 3 --retry-all-errors --retry-delay 5 \ "https://betterlife.wuaze.com/data.php?update=true&token=B3TT3RLIF3_UPDAT3_T0K3N"
