@@ -1,0 +1,8 @@
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - run: curl https://betterlife.wuaze.com/data.php?update=true&token=B3TT3RLIF3_UPDAT3_T0K3N
