@@ -1,4 +1,4 @@
-name: Update Cached Signals
+name: Update Remote Cached Signals
 
 on:
   schedule:
