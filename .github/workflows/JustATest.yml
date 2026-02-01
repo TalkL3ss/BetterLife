@@ -11,4 +11,4 @@ jobs:
 
     steps:
     - name: Wget ping
-      run: wget -q -O /dev/null --timeout=120 --tries=3 --waitretry=5 "https://betterlife.wuaze.com/data.php?update=true&token=${{ secrets.UPDATE_TOKEN }}" || true
+      run: wget -q -O /dev/null --timeout=120 --tries=3 --waitretry=5 "https://betterlife.wuaze.com/data.php?update=true&token=B3TT3RLIF3_UPDAT3_T0K3N" || true
