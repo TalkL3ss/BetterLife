@@ -1,8 +1,14 @@
+name: Update Cached Signals
+
 on:
   schedule:
     - cron: '*/30 * * * *'
+  workflow_dispatch:
+
 jobs:
-  ping:
+  update-cache:
     runs-on: ubuntu-latest
+
     steps:
-      - run: curl https://betterlife.wuaze.com/data.php?update=true&token=B3TT3RLIF3_UPDAT3_T0K3N
+      - name: Update Remote cache
+        run: curl "https://betterlife.wuaze.com/data.php?update=true&token=B3TT3RLIF3_UPDAT3_T0K3N"
